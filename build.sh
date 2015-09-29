@@ -8,7 +8,7 @@ TARGET_DIR=/lib/modules/$(uname -r)/kernel/arch/x86/kvm
 set -x
 
 # Make record_ctrl.c
-g++ record_ctrl.c -o record_ctrl
+gcc record_ctrl.c -o record_ctrl
 
 cd ./linux
 make -j $((NR_CORES + 1)) || exit 1

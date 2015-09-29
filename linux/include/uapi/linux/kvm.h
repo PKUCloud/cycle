@@ -543,6 +543,33 @@ struct kvm_ppc_smmu_info {
 #define KVM_TRACE_DISABLE         __KVM_DEPRECATED_MAIN_0x08
 
 /*
+ * Record & replay control.
+ */
+#define KVM_RR_CTRL			_IO(KVMIO, 0x09)
+
+struct kvm_rr_ctrl {
+	__u16 enabled;
+	__u16 ctrl;
+	__u32 timer_value;
+};
+
+/* Decide how to get accessed memory */
+#define KVM_RR_CTRL_MEM_MASK		0x7U
+#define KVM_RR_CTRL_MEM_SOFTWARE	0x0U
+#define KVM_RR_CTRL_MEM_EPT		0x1U
+#define KVM_RR_CTRL_MEM_MEMSLOT		0x2U
+
+/* Decide record and replay mode */
+#define KVM_RR_CTRL_MODE_MASK		(0x3U << 3)
+#define KVM_RR_CTRL_MODE_SYNC		0x0U
+#define KVM_RR_CTRL_MODE_ASYNC		(0x1U << 3)
+
+/* Decide how to kick vcpu */
+#define KVM_RR_CTRL_KICK_MASK		(0x3U << 5)
+#define KVM_RR_CTRL_KICK_PREEMPTION	0x0U
+#define KVM_RR_CTRL_KICK_TIMER		(0x1U << 5)
+
+/*
  * Extension capability list.
  */
 #define KVM_CAP_IRQCHIP	  0

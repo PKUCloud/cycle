@@ -54,6 +54,7 @@
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
+#include <asm/logger.h>
 
 #include "coalesced_mmio.h"
 #include "async_pf.h"
@@ -79,6 +80,9 @@ static atomic_t hardware_enable_failed;
 
 struct kmem_cache *kvm_vcpu_cache;
 EXPORT_SYMBOL_GPL(kvm_vcpu_cache);
+
+__read_mostly struct kvm_rr_ctrl rr_ctrl;
+EXPORT_SYMBOL_GPL(rr_ctrl);
 
 static __read_mostly struct preempt_ops kvm_preempt_ops;
 
@@ -2624,6 +2628,8 @@ static long kvm_dev_ioctl(struct file *filp,
 			  unsigned int ioctl, unsigned long arg)
 {
 	long r = -EINVAL;
+	void __user *argp = (void __user *)arg;
+	struct kvm_rr_ctrl rr_ctrl_user;
 
 	switch (ioctl) {
 	case KVM_GET_API_VERSION:
@@ -2654,6 +2660,31 @@ static long kvm_dev_ioctl(struct file *filp,
 	case KVM_TRACE_PAUSE:
 	case KVM_TRACE_DISABLE:
 		r = -EOPNOTSUPP;
+		break;
+	case KVM_RR_CTRL:
+		if (copy_from_user(&rr_ctrl_user, argp, sizeof(rr_ctrl_user))) {
+			r = -EFAULT;
+			RR_DLOG(ERR, "KVM_RR_CTRL copy_from_user() fail");
+			break;
+		}
+		RR_DLOG(INIT, "KVM_RR_CTRL, enabled: %u, ctrl: 0x%x, "
+			"timer_value: %lu", rr_ctrl_user.enabled,
+			rr_ctrl_user.ctrl,
+			rr_ctrl_user.timer_value);
+		r = 0;
+		if (rr_ctrl_user.enabled == 0) {
+			/* Disable recording */
+			rr_ctrl = rr_ctrl_user;
+			RR_DLOG(INIT, "rr_ctrl updated");
+		} else {
+			/* Enable recording */
+			if (rr_ctrl.enabled == 0) {
+				rr_ctrl = rr_ctrl_user;
+				RR_DLOG(INIT, "rr_ctrl updated");
+			} else {
+				r = -EBUSY;
+			}
+		}
 		break;
 	default:
 		return kvm_arch_dev_ioctl(filp, ioctl, arg);
