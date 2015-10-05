@@ -1,5 +1,5 @@
-#ifndef __ARCH_X86_LOGGER_LOGGER_H
-#define __ARCH_X86_LOGGER_LOGGER_H
+#ifndef __ARCH_X86_LOGGER_INTERNAL_H
+#define __ARCH_X86_LOGGER_INTERNAL_H
 
 #include <linux/cdev.h>
 #include <linux/spinlock.h>
