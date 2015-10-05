@@ -235,6 +235,7 @@ int main(int argc, char **argv)
 
 		if (argc < 6) {
 			ret = -1;
+			help();
 			goto out;
 		}
 		if(argc == 7) {
