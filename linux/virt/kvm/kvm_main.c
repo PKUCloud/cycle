@@ -253,6 +253,7 @@ int kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 	r = kvm_arch_vcpu_init(vcpu);
 	if (r < 0)
 		goto fail_free_run;
+	rr_vcpu_info_init(&vcpu->rr_info);
 	return 0;
 
 fail_free_run:
@@ -518,6 +519,7 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	list_add(&kvm->vm_list, &vm_list);
 	raw_spin_unlock(&kvm_lock);
 
+	rr_kvm_info_init(&kvm->rr_info);
 	return kvm;
 
 out_err:

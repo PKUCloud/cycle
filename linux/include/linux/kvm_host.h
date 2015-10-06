@@ -30,6 +30,7 @@
 #include <linux/kvm_para.h>
 
 #include <linux/kvm_types.h>
+#include <linux/record_replay.h>
 
 #include <asm/kvm_host.h>
 
@@ -136,6 +137,9 @@ extern struct kmem_cache *kvm_vcpu_cache;
 
 extern raw_spinlock_t kvm_lock;
 extern struct list_head vm_list;
+
+/* For record and replay */
+extern struct kvm_rr_ctrl rr_ctrl;
 
 struct kvm_io_range {
 	gpa_t addr;
@@ -260,6 +264,9 @@ struct kvm_vcpu {
 #endif
 	bool preempted;
 	struct kvm_vcpu_arch arch;
+
+	/* Record and replay */
+	struct rr_vcpu_info rr_info;
 };
 
 static inline int kvm_vcpu_exiting_guest_mode(struct kvm_vcpu *vcpu)
@@ -394,6 +401,9 @@ struct kvm {
 #endif
 	long tlbs_dirty;
 	struct list_head devices;
+
+	/* Record and replay */
+	struct rr_kvm_info rr_info;
 };
 
 #define kvm_err(fmt, ...) \

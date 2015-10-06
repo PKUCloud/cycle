@@ -48,6 +48,7 @@
 #include <linux/pci.h>
 #include <linux/timekeeper_internal.h>
 #include <linux/pvclock_gtod.h>
+#include <linux/record_replay.h>
 #include <trace/events/kvm.h>
 
 #define CREATE_TRACE_POINTS
@@ -5783,6 +5784,11 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 			kvm_deliver_pmi(vcpu);
 		if (kvm_check_request(KVM_REQ_SCAN_IOAPIC, vcpu))
 			vcpu_scan_ioapic(vcpu);
+	}
+
+	/* Enable record and replay */
+	if (unlikely(rr_ctrl.enabled && !vcpu->rr_info.enabled)) {
+		rr_vcpu_enable(vcpu);
 	}
 
 	if (kvm_check_request(KVM_REQ_EVENT, vcpu) || req_int_win) {
