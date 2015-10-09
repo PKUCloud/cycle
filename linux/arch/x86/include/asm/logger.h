@@ -9,10 +9,11 @@ extern int rr_log(const char* fmt, ...);
 
 #ifdef DEBUG_RECORD_REPLAY
 enum {
-	RR_DB_GEN, RR_DB_ERR, RR_DB_INIT,
+	RR_DB_GEN, RR_DB_ERR, RR_DB_INIT, RR_DB_MMU,
 };
 #define RR_DBBIT(x)	(1 << RR_DB_##x)
-static int rr_dbflags = RR_DBBIT(GEN) | RR_DBBIT(ERR) | RR_DBBIT(INIT);
+static int rr_dbflags = RR_DBBIT(GEN) | RR_DBBIT(ERR) | RR_DBBIT(INIT) |
+			RR_DBBIT(MMU);
 
 #define RR_DLOG(what, fmt, ...) do { \
 	if (rr_dbflags & RR_DBBIT(what)) { \

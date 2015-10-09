@@ -3,6 +3,8 @@
 #include <linux/delay.h>
 #include <asm/logger.h>
 
+#include "mmu.h"
+
 /* Synchronize all vcpus before enabling record and replay */
 static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 			  int (*master_func)(struct kvm_vcpu *vcpu),
@@ -56,9 +58,20 @@ static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 /* Initialization for RR_ASYNC_PREEMPTION_EPT */
 static int __rr_ape_init(struct kvm_vcpu *vcpu)
 {
-	RR_DLOG(INIT, "vcpu=%d start", vcpu->vcpu_id);
+	/* MUST make rr_info.enabled true before separating page tables */
 	vcpu->rr_info.enabled = true;
-	RR_DLOG(INIT, "vcpu=%d finish", vcpu->vcpu_id);
+	vcpu->rr_info.timer_value = rr_ctrl.timer_value;
+
+	/* Obsolete existing paging structures to separate page tables of
+	 * different vcpus.
+	 */
+	vcpu->kvm->arch.mmu_valid_gen++;
+	kvm_mmu_unload(vcpu);
+	kvm_mmu_reload(vcpu);
+
+	RR_DLOG(INIT, "vcpu=%d enabled, timer_value=%lu, root_hpa=0x%llx",
+		vcpu->vcpu_id, vcpu->rr_info.timer_value,
+		vcpu->arch.mmu.root_hpa);
 	return 0;
 }
 

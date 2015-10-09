@@ -11,7 +11,8 @@ struct kvm_vcpu;
 
 /* Record and replay control info for a particular vcpu */
 struct rr_vcpu_info {
-	bool enabled;	/* State of record and replay */
+	bool enabled;		/* State of record and replay */
+	u32 timer_value;	/* Preemption timer value of this vcpu */
 };
 
 /* Record and replay control info for kvm */
