@@ -5791,6 +5791,12 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		rr_vcpu_enable(vcpu);
 	}
 
+	/* Maybe executed many times before entering guest. Can we improve it
+	 * by moving this process backward in front of entering guest?
+	 */
+	if (rr_check_request(RR_REQ_CHECKPOINT, &vcpu->rr_info)) {
+	}
+
 	if (kvm_check_request(KVM_REQ_EVENT, vcpu) || req_int_win) {
 		kvm_apic_accept_events(vcpu);
 		if (vcpu->arch.mp_state == KVM_MP_STATE_INIT_RECEIVED) {

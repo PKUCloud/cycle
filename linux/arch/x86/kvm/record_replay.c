@@ -5,6 +5,8 @@
 
 #include "mmu.h"
 
+struct rr_ops *rr_ops;
+
 /* Synchronize all vcpus before enabling record and replay */
 static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 			  int (*master_func)(struct kvm_vcpu *vcpu),
@@ -69,17 +71,32 @@ static int __rr_ape_init(struct kvm_vcpu *vcpu)
 	kvm_mmu_unload(vcpu);
 	kvm_mmu_reload(vcpu);
 
-	RR_DLOG(INIT, "vcpu=%d enabled, timer_value=%lu, root_hpa=0x%llx",
+	rr_ops->ape_vmx_setup(vcpu->rr_info.timer_value);
+
+	RR_DLOG(INIT, "vcpu=%d enabled, preemption_timer=%lu, root_hpa=0x%llx",
 		vcpu->vcpu_id, vcpu->rr_info.timer_value,
 		vcpu->arch.mmu.root_hpa);
 	return 0;
 }
 
+int rr_init(struct rr_ops *vmx_rr_ops)
+{
+	RR_ASSERT(!rr_ops);
+	rr_ops = vmx_rr_ops;
+	RR_DLOG(INIT, "rr_ops initialized");
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rr_init);
+
 int rr_vcpu_info_init(struct rr_vcpu_info *rr_info)
 {
 	rr_info->enabled = false;
+	rr_info->timer_value = RR_DEFAULT_PREEMTION_TIMER_VAL;
+	rr_info->requests = 0;
+	mutex_init(&vcpu->event_list_lock);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(rr_vcpu_info_init);
 
 int rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info)
 {
@@ -87,6 +104,7 @@ int rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info)
 	atomic_set(&rr_kvm_info->nr_fin_vcpus, 0);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(rr_kvm_info_init);
 
 int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 {
@@ -94,12 +112,10 @@ int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 
 	RR_DLOG(INIT, "vcpu=%d start", vcpu->vcpu_id);
 	ret = __rr_vcpu_sync(vcpu, __rr_ape_init, __rr_ape_init);
+	if (!ret)
+		rr_make_request(RR_REQ_CHECKPOINT, &vcpu->rr_info);
 	RR_DLOG(INIT, "vcpu=%d finish", vcpu->vcpu_id);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(rr_vcpu_enable);
 
-void rr_test(void)
-{
-	RR_DLOG(ERR, "Hello, RR_ASYNC_PREEMPTION_EPT is %d",
-		RR_ASYNC_PREEMPTION_EPT);
-}
