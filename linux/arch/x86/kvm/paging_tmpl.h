@@ -23,6 +23,8 @@
  * so the code in this file is compiled twice, once per pte size.
  */
 
+extern void *rr_gfn_to_kaddr_ept(struct kvm_vcpu *vcpu, gfn_t gfn, int write);
+
 #if PTTYPE == 64
 	#define pt_element_t u64
 	#define guest_walker guest_walker64
@@ -160,6 +162,7 @@ static int FNAME(walk_addr_generic)(struct guest_walker *walker,
 	u16 errcode = 0;
 	gpa_t real_gpa;
 	gfn_t gfn;
+	void *kaddr;
 
 	trace_kvm_mmu_pagetable_walk(addr, access);
 retry_walk:
@@ -209,8 +212,25 @@ retry_walk:
 			goto error;
 
 		ptep_user = (pt_element_t __user *)((void *)host_addr + offset);
-		if (unlikely(__copy_from_user(&pte, ptep_user, sizeof(pte))))
+
+		/* FIXME: During recording, we should retrive the content via
+		 * EPT. However we can't get the userspace address of the
+		 * CoW page to fill @ptep_user.
+		 */
+		if (vcpu->rr_info.enabled) {
+			kaddr = rr_gfn_to_kaddr_ept(vcpu, real_gfn, 0);
+			if (kaddr) {
+				memcpy(&pte, kaddr + offset, sizeof(pte));
+			} else {
+				RR_DLOG(ERR, "error: vcpu=%d fail to retrive "
+					"content of gfn 0x%llx from guest\n",
+					vcpu->vcpu_id, real_gfn);
+				goto error;
+			}
+		} else if (unlikely(__copy_from_user(&pte, ptep_user,
+						     sizeof(pte))))
 			goto error;
+
 		walker->ptep_user[walker->level - 1] = ptep_user;
 
 		trace_kvm_mmu_paging_element(pte, walker->level);

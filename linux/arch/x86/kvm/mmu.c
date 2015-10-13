@@ -35,11 +35,13 @@
 #include <linux/srcu.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/record_replay.h>
 
 #include <asm/page.h>
 #include <asm/cmpxchg.h>
 #include <asm/io.h>
 #include <asm/vmx.h>
+#include <asm/logger.h>
 
 /*
  * When setting this variable to true it enables Two-Dimensional-Paging
@@ -2698,13 +2700,40 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t v, int write,
 	struct kvm_mmu_page *sp;
 	int emulate = 0;
 	gfn_t pseudo_gfn;
+	unsigned pte_access = ACC_ALL;
+
+	/* Record and replay */
+	RR_ASSERT(level == PT_PAGE_TABLE_LEVEL);
 
 	for_each_shadow_entry(vcpu, (u64)gfn << PAGE_SHIFT, iterator) {
 		if (iterator.level == level) {
-			mmu_set_spte(vcpu, iterator.sptep, ACC_ALL,
+			/* Record and replay */
+			if (vcpu->rr_info.enabled && !write) {
+				/* Read trap. Do not give the write
+				 * access right so that vcpu will trap
+				 * again when it tries to write to this
+				 * page next time.
+				 */
+				pte_access = ACC_EXEC_MASK | ACC_USER_MASK;
+			}
+
+			mmu_set_spte(vcpu, iterator.sptep, pte_access,
 				     write, &emulate, level, gfn, pfn,
 				     prefault, map_writable);
-			direct_pte_prefetch(vcpu, iterator.sptep);
+			/* Record and replay
+			 * Disable prefetch.
+			 */
+			/* direct_pte_prefetch(vcpu, iterator.sptep); */
+
+			if (vcpu->rr_info.enabled && write &&
+			    likely(!is_noslot_pfn(pfn)) &&
+			    likely(is_shadow_present_pte(*iterator.sptep))) {
+				/* CoW */
+				rr_vcpu_memory_cow(vcpu, iterator.sptep, gfn,
+						   pfn);
+			}
+			kvm_x86_ops->tlb_flush(vcpu);
+
 			++vcpu->stat.pf_fixed;
 			break;
 		}
@@ -2720,6 +2749,10 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t v, int write,
 
 			link_shadow_page(iterator.sptep, sp);
 		}
+
+		/* Record and replay */
+		RR_ASSERT(is_shadow_present_pte(*iterator.sptep));
+		*iterator.sptep |= VMX_EPT_ACCESS_BIT;
 	}
 	return emulate;
 }
@@ -3395,8 +3428,8 @@ static bool try_async_pf(struct kvm_vcpu *vcpu, bool prefault, gfn_t gfn,
 	return false;
 }
 
-static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
-			  bool prefault)
+int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
+		   bool prefault)
 {
 	pfn_t pfn;
 	int r;
@@ -3457,6 +3490,7 @@ out_unlock:
 	kvm_release_pfn_clean(pfn);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(tdp_page_fault);
 
 static void nonpaging_free(struct kvm_vcpu *vcpu)
 {

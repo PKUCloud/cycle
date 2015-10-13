@@ -420,7 +420,7 @@ int kvm_read_guest_page_mmu(struct kvm_vcpu *vcpu, struct kvm_mmu *mmu,
 
 	real_gfn = gpa_to_gfn(real_gfn);
 
-	return kvm_read_guest_page(vcpu->kvm, real_gfn, data, offset, len);
+	return kvm_read_guest_page(vcpu, real_gfn, data, offset, len);
 }
 EXPORT_SYMBOL_GPL(kvm_read_guest_page_mmu);
 
@@ -991,17 +991,19 @@ static void update_pvclock_gtod(struct timekeeper *tk)
 #endif
 
 
-static void kvm_write_wall_clock(struct kvm *kvm, gpa_t wall_clock)
+static void kvm_write_wall_clock(struct kvm_vcpu *vcpu, gpa_t wall_clock)
 {
 	int version;
 	int r;
 	struct pvclock_wall_clock wc;
 	struct timespec boot;
+	struct kvm *kvm = vcpu->kvm;
+
 
 	if (!wall_clock)
 		return;
 
-	r = kvm_read_guest(kvm, wall_clock, &version, sizeof(version));
+	r = kvm_read_guest(vcpu, wall_clock, &version, sizeof(version));
 	if (r)
 		return;
 
@@ -1010,7 +1012,7 @@ static void kvm_write_wall_clock(struct kvm *kvm, gpa_t wall_clock)
 
 	++version;
 
-	kvm_write_guest(kvm, wall_clock, &version, sizeof(version));
+	kvm_write_guest(vcpu, wall_clock, &version, sizeof(version));
 
 	/*
 	 * The guest calculates current wall clock time by adding
@@ -1028,10 +1030,10 @@ static void kvm_write_wall_clock(struct kvm *kvm, gpa_t wall_clock)
 	wc.nsec = boot.tv_nsec;
 	wc.version = version;
 
-	kvm_write_guest(kvm, wall_clock, &wc, sizeof(wc));
+	kvm_write_guest(vcpu, wall_clock, &wc, sizeof(wc));
 
 	version++;
-	kvm_write_guest(kvm, wall_clock, &version, sizeof(version));
+	kvm_write_guest(vcpu, wall_clock, &version, sizeof(version));
 }
 
 static uint32_t div_frac(uint32_t dividend, uint32_t divisor)
@@ -1581,7 +1583,7 @@ static int kvm_guest_time_update(struct kvm_vcpu *v)
 	 */
 	vcpu->hv_clock.version += 2;
 
-	if (unlikely(kvm_read_guest_cached(v->kvm, &vcpu->pv_time,
+	if (unlikely(kvm_read_guest_cached(v, &vcpu->pv_time,
 		&guest_hv_clock, sizeof(guest_hv_clock))))
 		return 0;
 
@@ -1599,7 +1601,7 @@ static int kvm_guest_time_update(struct kvm_vcpu *v)
 
 	vcpu->hv_clock.flags = pvclock_flags;
 
-	kvm_write_guest_cached(v->kvm, &vcpu->pv_time,
+	kvm_write_guest_cached(v, &vcpu->pv_time,
 				&vcpu->hv_clock,
 				sizeof(vcpu->hv_clock));
 	return 0;
@@ -1785,7 +1787,7 @@ static int xen_hvm_config(struct kvm_vcpu *vcpu, u64 data)
 		r = PTR_ERR(page);
 		goto out;
 	}
-	if (kvm_write_guest(kvm, page_addr, page, PAGE_SIZE))
+	if (kvm_write_guest(vcpu, page_addr, page, PAGE_SIZE))
 		goto out_free;
 	r = 0;
 out_free:
@@ -1935,7 +1937,7 @@ static void record_steal_time(struct kvm_vcpu *vcpu)
 	if (!(vcpu->arch.st.msr_val & KVM_MSR_ENABLED))
 		return;
 
-	if (unlikely(kvm_read_guest_cached(vcpu->kvm, &vcpu->arch.st.stime,
+	if (unlikely(kvm_read_guest_cached(vcpu, &vcpu->arch.st.stime,
 		&vcpu->arch.st.steal, sizeof(struct kvm_steal_time))))
 		return;
 
@@ -1943,7 +1945,7 @@ static void record_steal_time(struct kvm_vcpu *vcpu)
 	vcpu->arch.st.steal.version += 2;
 	vcpu->arch.st.accum_steal = 0;
 
-	kvm_write_guest_cached(vcpu->kvm, &vcpu->arch.st.stime,
+	kvm_write_guest_cached(vcpu, &vcpu->arch.st.stime,
 		&vcpu->arch.st.steal, sizeof(struct kvm_steal_time));
 }
 
@@ -2018,7 +2020,7 @@ int kvm_set_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	case MSR_KVM_WALL_CLOCK_NEW:
 	case MSR_KVM_WALL_CLOCK:
 		vcpu->kvm->arch.wall_clock = data;
-		kvm_write_wall_clock(vcpu->kvm, data);
+		kvm_write_wall_clock(vcpu, data);
 		break;
 	case MSR_KVM_SYSTEM_TIME_NEW:
 	case MSR_KVM_SYSTEM_TIME: {
@@ -3324,6 +3326,129 @@ out:
 	return r;
 }
 
+/* Record and replay */
+static int kvm_vcpu_make_checkpoint_get_lapic(struct kvm_vcpu *vcpu,
+					      struct rr_lapic *s)
+{
+	kvm_x86_ops->sync_pir_to_irr(vcpu);
+	memcpy(s->regs, vcpu->arch.apic->regs, sizeof(s->regs));
+	s->highest_isr_cache = vcpu->arch.apic->highest_isr_cache;
+	return 0;
+}
+
+/* Record and replay */
+static int kvm_vcpu_rollback_set_lapic(struct kvm_vcpu *vcpu,
+				       struct rr_lapic *s)
+{
+	struct kvm_lapic_state *lapic = (struct kvm_lapic_state *)(s->regs);
+	kvm_apic_post_state_restore(vcpu, lapic);
+	update_cr8_intercept(vcpu);
+	return 0;
+}
+
+/* Record and replay */
+int kvm_arch_vcpu_ioctl_to_make_checkpoint(struct kvm_vcpu *vcpu, int type,
+					   void *arg)
+{
+	int ret;
+	ret = 0;
+
+	switch (type){
+	case KVM_GET_REGS: {
+		ret = kvm_arch_vcpu_ioctl_get_regs(vcpu, arg);
+		break;
+	}
+	case KVM_GET_FPU: {
+		ret = kvm_arch_vcpu_ioctl_get_fpu(vcpu, arg);
+		break;
+	}
+	case KVM_GET_XSAVE: {
+		kvm_vcpu_ioctl_x86_get_xsave(vcpu, arg);
+		break;
+	}
+	case KVM_GET_SREGS: {
+		ret = kvm_arch_vcpu_ioctl_get_sregs(vcpu, arg);
+		break;
+	}
+	case KVM_GET_XCRS: {
+		kvm_vcpu_ioctl_x86_get_xcrs(vcpu, arg);
+		break;
+	}
+	case KVM_GET_MSRS: {
+		/* All parameters are kernel addresses, so use __msr_io */
+		struct kvm_msrs *msrs = arg;
+		struct kvm_msr_entry *entries = msrs->entries;
+		ret = __msr_io(vcpu, arg, entries, kvm_get_msr);
+		break;
+	}
+	case KVM_GET_MP_STATE: {
+		ret = kvm_arch_vcpu_ioctl_get_mpstate(vcpu, arg);
+		break;
+	}
+	case KVM_GET_LAPIC: {
+		ret = kvm_vcpu_make_checkpoint_get_lapic(vcpu, arg);
+		break;
+	}
+	case KVM_GET_VCPU_EVENTS: {
+		kvm_vcpu_ioctl_x86_get_vcpu_events(vcpu, arg);
+		break;
+	}
+	case KVM_GET_DEBUGREGS: {
+		kvm_vcpu_ioctl_x86_get_debugregs(vcpu, arg);
+		break;
+	}
+
+	/* set vcpu status */
+	case KVM_SET_REGS: {
+		ret = kvm_arch_vcpu_ioctl_set_regs(vcpu, arg);
+		break;
+	}
+	case KVM_SET_XSAVE: {
+		ret = kvm_vcpu_ioctl_x86_set_xsave(vcpu, arg);
+		break;
+	}
+	case KVM_SET_FPU:{
+		ret = kvm_arch_vcpu_ioctl_set_fpu(vcpu, arg);
+		break;
+	}
+	case KVM_SET_XCRS:{
+		ret = kvm_vcpu_ioctl_x86_set_xcrs(vcpu, arg);
+		break;
+	}
+	case KVM_SET_SREGS:{
+		ret = kvm_arch_vcpu_ioctl_set_sregs(vcpu, arg);
+		break;
+	}
+	case KVM_SET_MSRS:{
+		/* All parameters are kernel addresses, so use __msr_io */
+		struct kvm_msrs *msrs = arg;
+		struct kvm_msr_entry *entries = msrs->entries;
+		ret = __msr_io(vcpu, arg, entries, do_set_msr);
+		break;
+	}
+	case KVM_SET_MP_STATE:{
+		ret = kvm_arch_vcpu_ioctl_set_mpstate(vcpu, arg);
+		break;
+	}
+	case KVM_SET_LAPIC: {
+		ret = kvm_vcpu_rollback_set_lapic(vcpu, arg);
+		break;
+	}
+	case KVM_SET_VCPU_EVENTS: {
+		kvm_vcpu_ioctl_x86_set_vcpu_events(vcpu, arg);
+		break;
+	}
+	case KVM_SET_DEBUGREGS: {
+		kvm_vcpu_ioctl_x86_set_debugregs(vcpu, arg);
+		break;
+	}
+
+	default:
+		ret = -EINVAL;
+	}
+	return ret;
+}
+
 int kvm_arch_vcpu_fault(struct kvm_vcpu *vcpu, struct vm_fault *vmf)
 {
 	return VM_FAULT_SIGBUS;
@@ -3964,7 +4089,7 @@ static int kvm_read_guest_virt_helper(gva_t addr, void *val, unsigned int bytes,
 
 		if (gpa == UNMAPPED_GVA)
 			return X86EMUL_PROPAGATE_FAULT;
-		ret = kvm_read_guest(vcpu->kvm, gpa, data, toread);
+		ret = kvm_read_guest(vcpu, gpa, data, toread);
 		if (ret < 0) {
 			r = X86EMUL_IO_NEEDED;
 			goto out;
@@ -4030,7 +4155,7 @@ int kvm_write_guest_virt_system(struct x86_emulate_ctxt *ctxt,
 
 		if (gpa == UNMAPPED_GVA)
 			return X86EMUL_PROPAGATE_FAULT;
-		ret = kvm_write_guest(vcpu->kvm, gpa, data, towrite);
+		ret = kvm_write_guest(vcpu, gpa, data, towrite);
 		if (ret < 0) {
 			r = X86EMUL_IO_NEEDED;
 			goto out;
@@ -4082,7 +4207,7 @@ int emulator_write_phys(struct kvm_vcpu *vcpu, gpa_t gpa,
 {
 	int ret;
 
-	ret = kvm_write_guest(vcpu->kvm, gpa, val, bytes);
+	ret = kvm_write_guest(vcpu, gpa, val, bytes);
 	if (ret < 0)
 		return 0;
 	kvm_mmu_pte_write(vcpu, gpa, val, bytes);
@@ -4116,7 +4241,7 @@ static int read_prepare(struct kvm_vcpu *vcpu, void *val, int bytes)
 static int read_emulate(struct kvm_vcpu *vcpu, gpa_t gpa,
 			void *val, int bytes)
 {
-	return !kvm_read_guest(vcpu->kvm, gpa, val, bytes);
+	return !kvm_read_guest(vcpu, gpa, val, bytes);
 }
 
 static int write_emulate(struct kvm_vcpu *vcpu, gpa_t gpa,
@@ -5736,6 +5861,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		vcpu->run->request_interrupt_window;
 	bool req_immediate_exit = false;
 
+restart:
 	if (vcpu->requests) {
 		if (kvm_check_request(KVM_REQ_MMU_RELOAD, vcpu))
 			kvm_mmu_unload(vcpu);
@@ -5791,10 +5917,18 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		rr_vcpu_enable(vcpu);
 	}
 
-	/* Maybe executed many times before entering guest. Can we improve it
+	/* May be executed many times before entering guest. Can we improve it
 	 * by moving this process backward in front of entering guest?
 	 */
 	if (rr_check_request(RR_REQ_CHECKPOINT, &vcpu->rr_info)) {
+		/* Fetch the latest state from hardware fpu */
+		/* BUG: fpu_save_init() must be called with preempt disabled */
+		if (vcpu->guest_fpu_loaded) {
+			vcpu->guest_fpu_loaded = 0;
+			fpu_save_init(&vcpu->arch.guest_fpu);
+			__kernel_fpu_end();
+		}
+		rr_vcpu_checkpoint(vcpu);
 	}
 
 	if (kvm_check_request(KVM_REQ_EVENT, vcpu) || req_int_win) {
@@ -5831,6 +5965,16 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	if (unlikely(r)) {
 		goto cancel_injection;
 	}
+
+	/* May be executed many times before entering guest. */
+	if (rr_check_request(RR_REQ_COMMIT_MEMORY, &vcpu->rr_info))
+		rr_vcpu_commit_memory_again(vcpu);
+
+	/* Check if we need to do something before entering guest, for example,
+	 * wait for other vcpus to finish committing/rollbacking memory.
+	 */
+	if (rr_check_request(RR_REQ_POST_CHECK, &vcpu->rr_info))
+		rr_vcpu_post_check(vcpu);
 
 	preempt_disable();
 
@@ -5924,6 +6068,28 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	if (vcpu->arch.apic_attention)
 		kvm_lapic_sync_from_vapic(vcpu);
+
+	/* Record and replay */
+	if (vcpu->rr_info.enabled) {
+		rr_clear_all_request(&vcpu->rr_info);
+		r = rr_vcpu_check_chunk(vcpu);
+		if (r == RR_CHUNK_COMMIT) {
+			rr_make_request(RR_REQ_CHECKPOINT, &vcpu->rr_info);
+			rr_make_request(RR_REQ_COMMIT_MEMORY, &vcpu->rr_info);
+		} else if (r == RR_CHUNK_ROLLBACK) {
+			/* Unload fpu from hardware before we rollback fpu, or
+			 * kvm may overwrite the value we just rollback.
+			 */
+			if (vcpu->guest_fpu_loaded) {
+				vcpu->guest_fpu_loaded = 0;
+				fpu_save_init(&vcpu->arch.guest_fpu);
+				__kernel_fpu_end();
+			}
+			rr_vcpu_rollback(vcpu);
+			rr_vcpu_reinject_irq(vcpu);
+			goto restart;
+		}
+	}
 
 	r = kvm_x86_ops->handle_exit(vcpu);
 	return r;
@@ -7243,7 +7409,7 @@ static void kvm_del_async_pf_gfn(struct kvm_vcpu *vcpu, gfn_t gfn)
 static int apf_put_user(struct kvm_vcpu *vcpu, u32 val)
 {
 
-	return kvm_write_guest_cached(vcpu->kvm, &vcpu->arch.apf.data, &val,
+	return kvm_write_guest_cached(vcpu, &vcpu->arch.apf.data, &val,
 				      sizeof(val));
 }
 

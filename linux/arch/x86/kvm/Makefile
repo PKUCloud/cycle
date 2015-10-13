@@ -15,7 +15,7 @@ kvm-$(CONFIG_KVM_ASYNC_PF)	+= $(KVM)/async_pf.o
 
 kvm-y			+= x86.o mmu.o emulate.o i8259.o irq.o lapic.o \
 			   i8254.o cpuid.o pmu.o logger.o logger_mmap.o \
-			   record_replay.o
+			   record_replay.o checkpoint_rollback.o
 kvm-intel-y		+= vmx.o
 kvm-amd-y		+= svm.o
 

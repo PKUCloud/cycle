@@ -421,15 +421,15 @@ int kvm_apic_set_irq(struct kvm_vcpu *vcpu, struct kvm_lapic_irq *irq,
 static int pv_eoi_put_user(struct kvm_vcpu *vcpu, u8 val)
 {
 
-	return kvm_write_guest_cached(vcpu->kvm, &vcpu->arch.pv_eoi.data, &val,
+	return kvm_write_guest_cached(vcpu, &vcpu->arch.pv_eoi.data, &val,
 				      sizeof(val));
 }
 
 static int pv_eoi_get_user(struct kvm_vcpu *vcpu, u8 *val)
 {
 
-	return kvm_read_guest_cached(vcpu->kvm, &vcpu->arch.pv_eoi.data, val,
-				      sizeof(*val));
+	return kvm_read_guest_cached(vcpu, &vcpu->arch.pv_eoi.data, val,
+				     sizeof(*val));
 }
 
 static inline bool pv_eoi_enabled(struct kvm_vcpu *vcpu)
@@ -666,9 +666,9 @@ out:
  * Add a pending IRQ into lapic.
  * Return 1 if successfully added and 0 if discarded.
  */
-static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
-			     int vector, int level, int trig_mode,
-			     unsigned long *dest_map)
+int do_apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
+		       int vector, int level, int trig_mode,
+		       unsigned long *dest_map)
 {
 	int result = 0;
 	struct kvm_vcpu *vcpu = apic->vcpu;
@@ -761,6 +761,22 @@ out:
 		break;
 	}
 	return result;
+}
+EXPORT_SYMBOL_GPL(do_apic_accept_irq);
+
+static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
+			     int vector, int level, int trig_mode,
+			     unsigned long *dest_map)
+{
+	struct kvm_vcpu *vcpu = apic->vcpu;
+
+	if (vcpu->rr_info.enabled) {
+		rr_vcpu_add_irq(vcpu, delivery_mode, vector, level, trig_mode,
+				dest_map);
+	}
+
+	return do_apic_accept_irq(apic, delivery_mode, vector, level, trig_mode,
+				  dest_map);
 }
 
 int kvm_apic_compare_prio(struct kvm_vcpu *vcpu1, struct kvm_vcpu *vcpu2)
