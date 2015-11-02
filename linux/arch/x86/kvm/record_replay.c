@@ -93,7 +93,7 @@ int rr_vcpu_info_init(struct rr_vcpu_info *rr_info)
 	rr_info->enabled = false;
 	rr_info->timer_value = RR_DEFAULT_PREEMTION_TIMER_VAL;
 	rr_info->requests = 0;
-	mutex_init(&vcpu->event_list_lock);
+	mutex_init(&rr_info->event_list_lock);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_info_init);

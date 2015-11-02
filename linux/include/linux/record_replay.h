@@ -3,6 +3,7 @@
 
 #include <linux/kvm.h> /* ioctl definition */
 #include <linux/bitops.h>
+#include <linux/mutex.h>
 
 struct kvm;
 struct kvm_vcpu;
@@ -49,6 +50,6 @@ static inline bool rr_check_request(int req, struct rr_vcpu_info *rr_info)
 
 static inline void rr_clear_request(int req, struct rr_vcpu_info *rr_info)
 {
-	clear_bit(req, &&rr_info->requests);
+	clear_bit(req, &rr_info->requests);
 }
 #endif

@@ -6,6 +6,7 @@
 extern int rr_log(const char* fmt, ...);
 
 #define DEBUG_RECORD_REPLAY
+/* #define RECORD_REPLAY_LOG */
 
 #ifdef DEBUG_RECORD_REPLAY
 enum {
@@ -32,6 +33,19 @@ static int rr_dbflags = RR_DBBIT(GEN) | RR_DBBIT(ERR) | RR_DBBIT(INIT) |
 #define RR_DLOG(what, fmt, ...) do {} while (0)
 #define RR_ASSERT(x) do {} while (0)
 #endif
+
+#ifdef RECORD_REPLAY_LOG
+#define RR_LOG(fmt, ...) do { \
+	rr_log(fmt, ## __VA_ARGS__); \
+	} while (0)
+#else
+#define RR_LOG(fmt, ...) do {} while (0)
+#endif
+
+#define RR_ERR(fmt, ...) do { \
+	pr_err("%s: " fmt "\n", __func__, \
+	       ## __VA_ARGS__); \
+	} while (0)
 
 #endif
 
