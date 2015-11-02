@@ -21,6 +21,7 @@ struct rr_vcpu_info {
 	u32 timer_value;	/* Preemption timer value of this vcpu */
 	unsigned long requests;	/* Requests bitmap */
 	struct mutex event_list_lock;
+	bool is_master;
 };
 
 /* Record and replay control info for kvm */
@@ -33,9 +34,9 @@ struct rr_ops {
 	void (*ape_vmx_setup)(u32 timer_value);
 };
 
-int rr_init(struct rr_ops *rr_ops);
-int rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
-int rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info);
+void rr_init(struct rr_ops *rr_ops);
+void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
+void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info);
 int rr_vcpu_enable(struct kvm_vcpu *vcpu);
 
 static inline void rr_make_request(int req, struct rr_vcpu_info *rr_info)
@@ -51,5 +52,10 @@ static inline bool rr_check_request(int req, struct rr_vcpu_info *rr_info)
 static inline void rr_clear_request(int req, struct rr_vcpu_info *rr_info)
 {
 	clear_bit(req, &rr_info->requests);
+}
+
+static inline void rr_clear_all_request(struct rr_vcpu_info *rr_info)
+{
+	rr_info->requests = 0;
 }
 #endif
