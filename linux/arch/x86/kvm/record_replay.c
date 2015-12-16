@@ -159,3 +159,39 @@ int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_enable);
 
+static int __rr_crew_disable(struct kvm_vcpu *vcpu)
+{
+	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+
+	if (vrr_info->is_master) {
+		krr_info->enabled = false;
+	}
+
+	vrr_info->enabled = false;
+	rr_clear_all_request(vrr_info);
+
+	RR_DLOG(INIT, "vcpu=%d disabled", vcpu->vcpu_id);
+	return 0;
+}
+
+static int __rr_crew_post_disable(struct kvm_vcpu *vcpu)
+{
+	vcpu->kvm->arch.mmu_valid_gen++;
+	return 0;
+}
+
+void rr_vcpu_disable(struct kvm_vcpu *vcpu)
+{
+	__rr_vcpu_sync(vcpu, __rr_crew_disable, __rr_crew_disable,
+		       __rr_crew_post_disable);
+
+	kvm_mmu_unload(vcpu);
+	kvm_mmu_reload(vcpu);
+	kvm_make_request(KVM_REQ_TLB_FLUSH, vcpu);
+
+	RR_DLOG(INIT, "vcpu=%d finish", vcpu->vcpu_id);
+	printk(KERN_INFO "vcpu=%d disabled\n", vcpu->vcpu_id);
+}
+EXPORT_SYMBOL_GPL(rr_vcpu_disable);
+

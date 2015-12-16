@@ -30,6 +30,7 @@ struct rr_kvm_info {
 void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
 void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info);
 int rr_vcpu_enable(struct kvm_vcpu *vcpu);
+void rr_vcpu_disable(struct kvm_vcpu *vcpu);
 
 static inline void rr_make_request(int req, struct rr_vcpu_info *rr_info)
 {

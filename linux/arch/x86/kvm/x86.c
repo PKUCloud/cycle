@@ -5919,6 +5919,10 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	if (vcpu->arch.apic_attention)
 		kvm_lapic_sync_from_vapic(vcpu);
 
+	if (unlikely(!rr_ctrl.enabled && vcpu->rr_info.enabled)) {
+		rr_vcpu_disable(vcpu);
+	}
+
 	r = kvm_x86_ops->handle_exit(vcpu);
 	return r;
 
