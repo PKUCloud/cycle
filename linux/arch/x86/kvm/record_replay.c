@@ -5,12 +5,15 @@
 
 #include "mmu.h"
 
-struct rr_ops *rr_ops;
-
-/* Synchronize all vcpus before enabling record and replay */
+/* Synchronize all vcpus before enabling record and replay.
+ * Master will do master_pre_func before slaves and then master_post_func
+ * after slaves. After calling this function, @nr_sync_vcpus and
+ * @nr_fin_vcpus will be set to 0.
+ */
 static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
-			  int (*master_func)(struct kvm_vcpu *vcpu),
-			  int (*slave_func)(struct kvm_vcpu *vcpu))
+			  int (*master_pre_func)(struct kvm_vcpu *vcpu),
+			  int (*slave_func)(struct kvm_vcpu *vcpu),
+			  int (*master_post_func)(struct kvm_vcpu *vcpu))
 {
 	int ret = 0;
 	struct kvm *kvm = vcpu->kvm;
@@ -33,6 +36,7 @@ static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 				continue;
 			RR_DLOG(INIT, "vcpu=%d kick vcpu=%d", vcpu->vcpu_id,
 				kvm->vcpus[i]->vcpu_id);
+			kvm_make_request(KVM_REQ_EVENT, kvm->vcpus[i]);
 			kvm_vcpu_kick(kvm->vcpus[i]);
 		}
 		RR_DLOG(INIT, "vcpu=%d wait for other vcpus to sync",
@@ -44,8 +48,8 @@ static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 			msleep(1);
 		}
 		/* Do master things here */
-		if (master_func)
-			ret = master_func(vcpu);
+		if (master_pre_func)
+			ret = master_pre_func(vcpu);
 		/* Let slaves begin */
 		atomic_set(&rr_kvm_info->nr_sync_vcpus, 0);
 	} else {
@@ -62,6 +66,8 @@ static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 		while (atomic_read(&rr_kvm_info->nr_fin_vcpus) < online_vcpus) {
 			msleep(1);
 		}
+		if (master_post_func)
+			ret = master_post_func(vcpu);
 		atomic_set(&rr_kvm_info->nr_fin_vcpus, 0);
 	} else {
 		while (atomic_read(&rr_kvm_info->nr_fin_vcpus) != 0) {
@@ -72,12 +78,30 @@ static int __rr_vcpu_sync(struct kvm_vcpu *vcpu,
 	return ret;
 }
 
+static void __rr_vcpu_enable(struct kvm_vcpu *vcpu)
+{
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+
+	vrr_info->requests = 0;
+	vrr_info->enabled = true;
+
+	RR_DLOG(INIT, "vcpu=%d rr_vcpu_info initialized", vcpu->vcpu_id);
+}
+
+static void __rr_kvm_enable(struct kvm *kvm)
+{
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
+
+	krr_info->enabled = true;
+
+	RR_DLOG(INIT, "rr_kvm_info initialized");
+}
+
 /* Initialization for RR_ASYNC_PREEMPTION_EPT */
-static int __rr_ape_init(struct kvm_vcpu *vcpu)
+static int __rr_crew_init(struct kvm_vcpu *vcpu)
 {
 	/* MUST make rr_info.enabled true before separating page tables */
-	vcpu->rr_info.enabled = true;
-	vcpu->rr_info.timer_value = rr_ctrl.timer_value;
+	__rr_vcpu_enable(vcpu);
 
 	/* Obsolete existing paging structures to separate page tables of
 	 * different vcpus.
@@ -88,39 +112,37 @@ static int __rr_ape_init(struct kvm_vcpu *vcpu)
 	kvm_mmu_unload(vcpu);
 	kvm_mmu_reload(vcpu);
 
-	rr_ops->ape_vmx_setup(vcpu->rr_info.timer_value);
-
-	RR_DLOG(INIT, "vcpu=%d enabled, preemption_timer=%lu, root_hpa=0x%llx",
-		vcpu->vcpu_id, vcpu->rr_info.timer_value,
-		vcpu->arch.mmu.root_hpa);
+	RR_DLOG(INIT, "vcpu=%d enabled, root_hpa=0x%llx",
+		vcpu->vcpu_id, vcpu->arch.mmu.root_hpa);
 	return 0;
 }
 
-void rr_init(struct rr_ops *vmx_rr_ops)
+static int __rr_crew_post_init(struct kvm_vcpu *vcpu)
 {
-	RR_ASSERT(!rr_ops);
-	rr_ops = vmx_rr_ops;
-	RR_DLOG(INIT, "rr_ops initialized");
+	RR_ASSERT(vcpu->rr_info.is_master);
+	__rr_kvm_enable(vcpu->kvm);
+	return 0;
 }
-EXPORT_SYMBOL_GPL(rr_init);
 
 void rr_vcpu_info_init(struct rr_vcpu_info *rr_info)
 {
 	memset(rr_info, 0, sizeof(*rr_info));
 	rr_info->enabled = false;
-	rr_info->timer_value = RR_DEFAULT_PREEMTION_TIMER_VAL;
 	rr_info->requests = 0;
 	rr_info->is_master = false;
-	mutex_init(&rr_info->event_list_lock);
-	RR_DLOG(INIT, "rr_vcpu_info initialized");
+
+	RR_DLOG(INIT, "rr_vcpu_info initialized partially");
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_info_init);
 
 void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info)
 {
+	memset(rr_kvm_info, 0, sizeof(*rr_kvm_info));
+	rr_kvm_info->enabled = false;
 	atomic_set(&rr_kvm_info->nr_sync_vcpus, 0);
 	atomic_set(&rr_kvm_info->nr_fin_vcpus, 0);
-	RR_DLOG(INIT, "rr_kvm_info initialized");
+
+	RR_DLOG(INIT, "rr_kvm_info initialized partially");
 }
 EXPORT_SYMBOL_GPL(rr_kvm_info_init);
 
@@ -129,10 +151,10 @@ int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 	int ret;
 
 	RR_DLOG(INIT, "vcpu=%d start", vcpu->vcpu_id);
-	ret = __rr_vcpu_sync(vcpu, __rr_ape_init, __rr_ape_init);
-	if (!ret)
-		rr_make_request(RR_REQ_CHECKPOINT, &vcpu->rr_info);
+	ret = __rr_vcpu_sync(vcpu, __rr_crew_init, __rr_crew_init,
+			     __rr_crew_post_init);
 	RR_DLOG(INIT, "vcpu=%d finish", vcpu->vcpu_id);
+	printk(KERN_INFO "vcpu=%d enabled\n", vcpu->vcpu_id);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_enable);

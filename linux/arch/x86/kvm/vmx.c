@@ -31,7 +31,6 @@
 #include <linux/ftrace_event.h>
 #include <linux/slab.h>
 #include <linux/tboot.h>
-#include <linux/record_replay.h>
 #include "kvm_cache_regs.h"
 #include "x86.h"
 
@@ -44,7 +43,6 @@
 #include <asm/xcr.h>
 #include <asm/perf_event.h>
 #include <asm/kexec.h>
-#include <asm/logger.h>
 
 #include "trace.h"
 
@@ -6250,17 +6248,6 @@ static int handle_vmptrst(struct kvm_vcpu *vcpu)
 	return 1;
 }
 
-/* Preemption handler for record and replay */
-static int handle_preemption(struct kvm_vcpu *vcpu)
-{
-	/* We need the preemption to kick the vcpu out periodly, so we need to
-	 * do nothing here but reset the timer value and return 1 to let the
-	 * guest resume.
-	 */
-	vmcs_write32(VMX_PREEMPTION_TIMER_VALUE, vcpu->rr_info.timer_value);
-	return 1;
-}
-
 /*
  * The exit handlers return 1 if the exit was handled fully and guest execution
  * may resume.  Otherwise they set the kvm_run parameter to indicate what needs
@@ -6305,7 +6292,6 @@ static int (*const kvm_vmx_exit_handlers[])(struct kvm_vcpu *vcpu) = {
 	[EXIT_REASON_PAUSE_INSTRUCTION]       = handle_pause,
 	[EXIT_REASON_MWAIT_INSTRUCTION]	      = handle_invalid_op,
 	[EXIT_REASON_MONITOR_INSTRUCTION]     = handle_invalid_op,
-	[EXIT_REASON_PREEMPTION_TIMER]        = handle_preemption,
 };
 
 static const int kvm_vmx_max_exit_handlers =
@@ -8221,21 +8207,6 @@ static struct kvm_x86_ops vmx_x86_ops = {
 	.handle_external_intr = vmx_handle_external_intr,
 };
 
-/* Record and replay */
-static void vmx_rr_ape_setup(u32 timer_value)
-{
-	/* Setup preemption timer */
-	vmcs_write32(VMX_PREEMPTION_TIMER_VALUE, timer_value);
-	vmcs_set_bits(PIN_BASED_VM_EXEC_CONTROL,
-		      PIN_BASED_VMX_PREEMPTION_TIMER);
-	vmcs_set_bits(VM_EXIT_CONTROLS, VM_EXIT_SAVE_VMX_PREEMPTION_TIMER);
-	RR_DLOG(INIT, "timer_value=%d", timer_value);
-}
-
-static struct rr_ops vmx_rr_ops = {
-	.ape_vmx_setup = vmx_rr_ape_setup,
-};
-
 static int __init vmx_init(void)
 {
 	int r, i, msr;
@@ -8309,8 +8280,6 @@ static int __init vmx_init(void)
 		     __alignof__(struct vcpu_vmx), THIS_MODULE);
 	if (r)
 		goto out7;
-
-	rr_init(&vmx_rr_ops);
 
 #ifdef CONFIG_KEXEC
 	rcu_assign_pointer(crash_vmclear_loaded_vmcss,

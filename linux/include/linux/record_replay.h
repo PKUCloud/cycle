@@ -13,28 +13,20 @@ struct kvm_vcpu;
 
 #define RR_DEFAULT_PREEMTION_TIMER_VAL	30000
 
-#define RR_REQ_CHECKPOINT		0
-
 /* Record and replay control info for a particular vcpu */
 struct rr_vcpu_info {
 	bool enabled;		/* State of record and replay */
-	u32 timer_value;	/* Preemption timer value of this vcpu */
 	unsigned long requests;	/* Requests bitmap */
-	struct mutex event_list_lock;
 	bool is_master;
 };
 
 /* Record and replay control info for kvm */
 struct rr_kvm_info {
+	bool enabled;
 	atomic_t nr_sync_vcpus;
 	atomic_t nr_fin_vcpus;
 };
 
-struct rr_ops {
-	void (*ape_vmx_setup)(u32 timer_value);
-};
-
-void rr_init(struct rr_ops *rr_ops);
 void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
 void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info);
 int rr_vcpu_enable(struct kvm_vcpu *vcpu);
