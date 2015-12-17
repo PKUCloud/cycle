@@ -2,6 +2,7 @@
 #define __RECORD_REPLAY_H
 
 #include <linux/kvm.h> /* ioctl definition */
+#include <linux/kvm_types.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
 
@@ -25,6 +26,16 @@ struct rr_kvm_info {
 	bool enabled;
 	atomic_t nr_sync_vcpus;
 	atomic_t nr_fin_vcpus;
+	struct hlist_head *gfn_hash;	/* Hash table for gfn state */
+};
+
+struct rr_gfn_state {
+	struct hlist_node hlink;
+	gfn_t gfn;
+	/* The vcpu_id of this gfn's owner. -1 indicates that this gfn is
+	 * shared.
+	 */
+	int owner_id;
 };
 
 void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);

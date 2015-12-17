@@ -4,6 +4,7 @@
 #include <asm/logger.h>
 
 #include "mmu.h"
+#include "rr_hash.h"
 
 /* Synchronize all vcpus before enabling record and replay.
  * Master will do master_pre_func before slaves and then master_post_func
@@ -92,6 +93,7 @@ static void __rr_kvm_enable(struct kvm *kvm)
 {
 	struct rr_kvm_info *krr_info = &kvm->rr_info;
 
+	rr_init_hash(&krr_info->gfn_hash);
 	krr_info->enabled = true;
 
 	RR_DLOG(INIT, "rr_kvm_info initialized");
@@ -177,7 +179,23 @@ static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 
 static int __rr_crew_post_disable(struct kvm_vcpu *vcpu)
 {
+	int i;
+	struct hlist_head *phead;
+	struct hlist_node *tmp;
+	struct rr_gfn_state *gfnsta;
+	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
+
 	vcpu->kvm->arch.mmu_valid_gen++;
+
+	/* Clear hash */
+	for (i = 0; i < RR_HASH_SIZE; ++i) {
+		phead = &krr_info->gfn_hash[i];
+		hlist_for_each_entry_safe(gfnsta, tmp, phead, hlink) {
+			hlist_del(&gfnsta->hlink);
+			kfree(gfnsta);
+		}
+	}
+	rr_clear_hash(&krr_info->gfn_hash);
 	return 0;
 }
 
