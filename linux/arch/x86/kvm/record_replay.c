@@ -84,6 +84,7 @@ static void __rr_vcpu_enable(struct kvm_vcpu *vcpu)
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	vrr_info->requests = 0;
+	vrr_info->perm_req.vcpu_id = vcpu->vcpu_id;
 	vrr_info->enabled = true;
 
 	RR_DLOG(INIT, "vcpu=%d rr_vcpu_info initialized", vcpu->vcpu_id);
@@ -143,6 +144,8 @@ void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info)
 	rr_kvm_info->enabled = false;
 	atomic_set(&rr_kvm_info->nr_sync_vcpus, 0);
 	atomic_set(&rr_kvm_info->nr_fin_vcpus, 0);
+	spin_lock_init(&rr_kvm_info->crew_lock);
+	INIT_LIST_HEAD(&rr_kvm_info->req_list);
 
 	RR_DLOG(INIT, "rr_kvm_info initialized partially");
 }
@@ -212,4 +215,213 @@ void rr_vcpu_disable(struct kvm_vcpu *vcpu)
 	printk(KERN_INFO "vcpu=%d disabled\n", vcpu->vcpu_id);
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_disable);
+
+/* Macros from mmu.c */
+#define ACC_EXEC_MASK    1
+#define ACC_WRITE_MASK   PT_WRITABLE_MASK
+#define ACC_USER_MASK    PT_USER_MASK
+#define ACC_ALL          (ACC_EXEC_MASK | ACC_WRITE_MASK | ACC_USER_MASK)
+
+#define PT64_BASE_ADDR_MASK (((1ULL << 52) - 1) & ~(u64)(PAGE_SIZE-1))
+#define PT_FIRST_AVAIL_BITS_SHIFT 10
+#define SPTE_MMU_WRITEABLE	(1ULL << (PT_FIRST_AVAIL_BITS_SHIFT + 1))
+
+#define PT64_LEVEL_BITS 9
+
+#define PT64_LEVEL_SHIFT(level) \
+		(PAGE_SHIFT + (level - 1) * PT64_LEVEL_BITS)
+
+#define PT64_NR_PT_ENTRY	512
+
+#define SHADOW_PT_ADDR(address, index, level) \
+	(address + (index << PT64_LEVEL_SHIFT(level)))
+
+#define PT64_INDEX(address, level)\
+	(((address) >> PT64_LEVEL_SHIFT(level)) & ((1 << PT64_LEVEL_BITS) - 1))
+
+#define SHADOW_PT_INDEX(addr, level) PT64_INDEX(addr, level)
+
+static u64 __read_mostly shadow_mmio_mask;
+
+static inline bool is_mmio_spte(u64 spte)
+{
+	return (spte & shadow_mmio_mask) == shadow_mmio_mask;
+}
+
+static inline int is_shadow_present_pte(u64 pte)
+{
+	return pte & PT_PRESENT_MASK && !is_mmio_spte(pte);
+}
+
+static int inline is_large_pte(u64 pte)
+{
+	return pte & PT_PAGE_SIZE_MASK;
+}
+
+static int inline is_last_spte(u64 pte, int level)
+{
+	if (level == PT_PAGE_TABLE_LEVEL)
+		return 1;
+	if (is_large_pte(pte))
+		return 1;
+	return 0;
+}
+
+void rr_set_mmio_spte_mask(u64 mmio_mask)
+{
+	RR_DLOG(INIT, "shadow_mmio_mask set to 0x%llx", mmio_mask);
+	shadow_mmio_mask = mmio_mask;
+}
+EXPORT_SYMBOL_GPL(rr_set_mmio_spte_mask);
+
+static inline void rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
+					  u64 perm_mask)
+{
+	int level = vcpu->arch.mmu.shadow_root_level;
+	hpa_t addr = (u64)gfn << PAGE_SHIFT;
+	hpa_t shadow_addr = vcpu->arch.mmu.root_hpa;
+	unsigned index;
+	u64 *sptep;
+
+	RR_ASSERT(level == PT64_ROOT_LEVEL);
+	RR_ASSERT(shadow_addr != INVALID_PAGE);
+
+	for (; level >= PT_PAGE_TABLE_LEVEL; --level) {
+		index = SHADOW_PT_INDEX(addr, level);
+		sptep = ((u64 *)__va(shadow_addr)) + index;
+		if (unlikely(!is_shadow_present_pte(*sptep))) {
+			return;
+		}
+		if (is_last_spte(*sptep, level)) {
+			*sptep &= perm_mask;
+			return;
+		}
+		shadow_addr = *sptep & PT64_BASE_ADDR_MASK;
+	}
+}
+
+/* Should be called within krr_info.crew_lock.
+ * Change ept of all vcpus and add a req node to the krr_info.req_list.
+ */
+unsigned rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
+{
+	unsigned pte_access = ACC_ALL;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+	struct kvm *kvm = vcpu->kvm;
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
+	struct rr_perm_req *req = &vrr_info->perm_req;
+	int online_vcpus = atomic_read(&kvm->online_vcpus);
+	int i;
+	struct kvm_vcpu *vcpu_iter;
+	u64 perm_mask = ~(PT_WRITABLE_MASK | PT_PRESENT_MASK | PT_USER_MASK);
+
+	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d", vcpu->vcpu_id,
+		gfn, write);
+	req->gfn = gfn;
+	req->write = write;
+	req->is_valid = true;
+	req->nr_ack_left = online_vcpus - 1;
+	memset(req->acks, 0, sizeof(req->acks));
+
+	rr_make_request(RR_REQ_TLB_FLUSH, vrr_info);
+
+	if (!write) {
+		pte_access = ACC_EXEC_MASK | ACC_USER_MASK;
+		perm_mask = ~PT_WRITABLE_MASK;
+	}
+	list_add_tail(&req->link, &krr_info->req_list);
+
+	/* Set other vcpus' ept */
+	for (i = 0; i < online_vcpus; ++i) {
+		vcpu_iter = kvm->vcpus[i];
+		if (vcpu_iter == vcpu)
+			continue;
+		// rr_ept_set_perm_by_gfn(vcpu_iter, gfn, perm_mask);
+	}
+
+	return pte_access;
+}
+EXPORT_SYMBOL_GPL(rr_request_perm);
+
+/* After page_fault handler, we need to sync with other vcpus */
+void rr_request_perm_post(struct kvm_vcpu *vcpu)
+{
+	struct rr_perm_req *my_req = &vcpu->rr_info.perm_req;
+
+	if (my_req->is_valid && my_req->nr_ack_left > 0) {
+		RR_DLOG(MMU, "vcpu=%d flush remote tlbs", vcpu->vcpu_id);
+		kvm_flush_remote_tlbs(vcpu->kvm);
+	}
+}
+EXPORT_SYMBOL_GPL(rr_request_perm_post);
+
+static inline void rr_handle_perm_req_one(struct kvm_vcpu *vcpu,
+					  struct rr_perm_req *req)
+{
+	RR_DLOG(MMU, "vcpu=%d ack req=%d gfn=0x%llx", vcpu->vcpu_id,
+		req->vcpu_id, req->gfn);
+	req->acks[vcpu->vcpu_id] = true;
+	req->nr_ack_left--;
+	rr_make_request(RR_REQ_TLB_FLUSH, &vcpu->rr_info);
+}
+
+/* Check if there is any other vcpus' req we need to ack */
+void rr_handle_perm_req(struct kvm_vcpu *vcpu)
+{
+	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
+	struct rr_perm_req *req;
+	struct list_head *head = &krr_info->req_list;
+
+	RR_DLOG(MMU, "vcpu=%d", vcpu->vcpu_id);
+	spin_lock(&krr_info->crew_lock);
+	list_for_each_entry(req, head, link) {
+		if (req->vcpu_id == vcpu->vcpu_id)
+			continue;
+
+		if (req->nr_ack_left > 0 && !req->acks[vcpu->vcpu_id]) {
+			rr_handle_perm_req_one(vcpu, req);
+		}
+	}
+	spin_unlock(&krr_info->crew_lock);
+}
+EXPORT_SYMBOL_GPL(rr_handle_perm_req);
+
+void rr_clear_perm_req(struct kvm_vcpu *vcpu)
+{
+	struct rr_perm_req *my_req = &vcpu->rr_info.perm_req;
+
+	RR_DLOG(MMU, "vcpu=%d", vcpu->vcpu_id);
+	RR_ASSERT(my_req->is_valid);
+	spin_lock(&vcpu->kvm->rr_info.crew_lock);
+	list_del(&my_req->link);
+	my_req->is_valid = false;
+	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+}
+EXPORT_SYMBOL_GPL(rr_clear_perm_req);
+
+/* Should be called within krr_info.crew_lock.
+ * Check if there is any req in the krr_info.req_list conflict with @gfn.
+ * Return 0 indicates there is conflict and should not continue page fault
+ * handling.
+ */
+int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
+{
+	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
+	struct rr_perm_req *req;
+
+	list_for_each_entry(req, &krr_info->req_list, link) {
+		RR_ASSERT(req->vcpu_id != vcpu->vcpu_id);
+		RR_ASSERT(req->is_valid);
+		if (req->gfn == gfn) {
+			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d check fail",
+				vcpu->vcpu_id, gfn, write);
+			return 0;
+		}
+	}
+
+	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d check pass",
+		vcpu->vcpu_id, gfn, write);
+	return 1;
+}
+EXPORT_SYMBOL_GPL(rr_page_fault_check);
 

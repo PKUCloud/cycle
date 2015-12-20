@@ -14,11 +14,26 @@ struct kvm_vcpu;
 
 #define RR_DEFAULT_PREEMTION_TIMER_VAL	30000
 
+#define RR_REQ_TLB_FLUSH		0
+
+#define RR_MAX_VCPUS			16
+
+struct rr_perm_req {
+	struct list_head link;
+	bool is_valid;
+	gfn_t gfn;
+	int write;
+	int nr_ack_left;
+	bool acks[RR_MAX_VCPUS];
+	int vcpu_id;
+};
+
 /* Record and replay control info for a particular vcpu */
 struct rr_vcpu_info {
 	bool enabled;		/* State of record and replay */
 	unsigned long requests;	/* Requests bitmap */
 	bool is_master;
+	struct rr_perm_req perm_req;
 };
 
 /* Record and replay control info for kvm */
@@ -27,6 +42,8 @@ struct rr_kvm_info {
 	atomic_t nr_sync_vcpus;
 	atomic_t nr_fin_vcpus;
 	struct hlist_head *gfn_hash;	/* Hash table for gfn state */
+	spinlock_t crew_lock;
+	struct list_head req_list;
 };
 
 struct rr_gfn_state {
@@ -42,6 +59,12 @@ void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
 void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info);
 int rr_vcpu_enable(struct kvm_vcpu *vcpu);
 void rr_vcpu_disable(struct kvm_vcpu *vcpu);
+unsigned rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write);
+void rr_request_perm_post(struct kvm_vcpu *vcpu);
+void rr_handle_perm_req(struct kvm_vcpu *vcpu);
+void rr_clear_perm_req(struct kvm_vcpu *vcpu);
+void rr_set_mmio_spte_mask(u64 mmio_mask);
+int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write);
 
 static inline void rr_make_request(int req, struct rr_vcpu_info *rr_info)
 {

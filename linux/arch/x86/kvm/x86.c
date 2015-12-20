@@ -5735,6 +5735,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	bool req_int_win = !irqchip_in_kernel(vcpu->kvm) &&
 		vcpu->run->request_interrupt_window;
 	bool req_immediate_exit = false;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	if (vcpu->requests) {
 		if (kvm_check_request(KVM_REQ_MMU_RELOAD, vcpu))
@@ -5753,7 +5754,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		if (kvm_check_request(KVM_REQ_MMU_SYNC, vcpu))
 			kvm_mmu_sync_roots(vcpu);
 		if (kvm_check_request(KVM_REQ_TLB_FLUSH, vcpu))
-			kvm_x86_ops->tlb_flush(vcpu);
+			rr_make_request(RR_REQ_TLB_FLUSH, vrr_info);
 		if (kvm_check_request(KVM_REQ_REPORT_TPR_ACCESS, vcpu)) {
 			vcpu->run->exit_reason = KVM_EXIT_TPR_ACCESS;
 			r = 0;
@@ -5787,7 +5788,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	}
 
 	/* Enable record and replay */
-	if (unlikely(rr_ctrl.enabled && !vcpu->rr_info.enabled)) {
+	if (unlikely(rr_ctrl.enabled && !vrr_info->enabled)) {
 		rr_vcpu_enable(vcpu);
 	}
 
@@ -5826,6 +5827,10 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		goto cancel_injection;
 	}
 
+	if (vrr_info->enabled) {
+		rr_handle_perm_req(vcpu);
+	}
+
 	preempt_disable();
 
 	kvm_x86_ops->prepare_guest_switch(vcpu);
@@ -5851,6 +5856,15 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		r = 1;
 		goto cancel_injection;
 	}
+
+	/* Record and replay */
+	if (rr_check_request(RR_REQ_TLB_FLUSH, vrr_info)) {
+		kvm_x86_ops->tlb_flush(vcpu);
+		rr_clear_request(RR_REQ_TLB_FLUSH, vrr_info);
+	}
+
+	if (vrr_info->perm_req.is_valid)
+		rr_clear_perm_req(vcpu);
 
 	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
 
@@ -5919,8 +5933,10 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	if (vcpu->arch.apic_attention)
 		kvm_lapic_sync_from_vapic(vcpu);
 
-	if (unlikely(!rr_ctrl.enabled && vcpu->rr_info.enabled)) {
-		rr_vcpu_disable(vcpu);
+	if (vrr_info->enabled) {
+		rr_handle_perm_req(vcpu);
+		if (unlikely(!rr_ctrl.enabled))
+			rr_vcpu_disable(vcpu);
 	}
 
 	r = kvm_x86_ops->handle_exit(vcpu);

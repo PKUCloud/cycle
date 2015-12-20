@@ -194,6 +194,7 @@ static void mmu_free_roots(struct kvm_vcpu *vcpu);
 void kvm_mmu_set_mmio_spte_mask(u64 mmio_mask)
 {
 	shadow_mmio_mask = mmio_mask;
+	rr_set_mmio_spte_mask(mmio_mask);
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_set_mmio_spte_mask);
 
@@ -2698,13 +2699,17 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t v, int write,
 	struct kvm_mmu_page *sp;
 	int emulate = 0;
 	gfn_t pseudo_gfn;
+	unsigned pte_access = ACC_ALL;
 
 	for_each_shadow_entry(vcpu, (u64)gfn << PAGE_SHIFT, iterator) {
 		if (iterator.level == level) {
-			mmu_set_spte(vcpu, iterator.sptep, ACC_ALL,
+			if (vcpu->rr_info.enabled) {
+				pte_access = rr_request_perm(vcpu, gfn, write);
+			}
+			mmu_set_spte(vcpu, iterator.sptep, pte_access,
 				     write, &emulate, level, gfn, pfn,
 				     prefault, map_writable);
-			direct_pte_prefetch(vcpu, iterator.sptep);
+			/* direct_pte_prefetch(vcpu, iterator.sptep); */
 			++vcpu->stat.pf_fixed;
 			break;
 		}
@@ -3428,8 +3433,11 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	} else
 		level = PT_PAGE_TABLE_LEVEL;
 
+	/* Record and replay
+	 * We do not try fast page fault now.
 	if (fast_page_fault(vcpu, gpa, level, error_code))
 		return 0;
+	*/
 
 	mmu_seq = vcpu->kvm->mmu_notifier_seq;
 	smp_rmb();
@@ -3443,15 +3451,24 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	spin_lock(&vcpu->kvm->mmu_lock);
 	if (mmu_notifier_retry(vcpu->kvm, mmu_seq))
 		goto out_unlock;
+	spin_lock(&vcpu->kvm->rr_info.crew_lock);
+
+	/* Check if gfn conflic with other vcpus' requests */
+	if (vcpu->rr_info.enabled && !rr_page_fault_check(vcpu, gfn, write))
+		goto out_crew_unlock;
+
 	make_mmu_pages_available(vcpu);
 	if (likely(!force_pt_level))
 		transparent_hugepage_adjust(vcpu, &gfn, &pfn, &level);
 	r = __direct_map(vcpu, gpa, write, map_writable,
 			 level, gfn, pfn, prefault);
+	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
 	spin_unlock(&vcpu->kvm->mmu_lock);
 
 	return r;
 
+out_crew_unlock:
+	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
 out_unlock:
 	spin_unlock(&vcpu->kvm->mmu_lock);
 	kvm_release_pfn_clean(pfn);
@@ -4174,6 +4191,11 @@ int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gva_t cr2, u32 error_code,
 	enum emulation_result er;
 
 	r = vcpu->arch.mmu.page_fault(vcpu, cr2, error_code, false);
+
+	/* Record and replay */
+	if (vcpu->rr_info.enabled)
+		rr_request_perm_post(vcpu);
+
 	if (r < 0)
 		goto out;
 
