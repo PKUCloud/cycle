@@ -222,6 +222,8 @@ EXPORT_SYMBOL_GPL(rr_vcpu_disable);
 #define ACC_USER_MASK    PT_USER_MASK
 #define ACC_ALL          (ACC_EXEC_MASK | ACC_WRITE_MASK | ACC_USER_MASK)
 
+#define RR_PT_ALL	 (PT_PRESENT_MASK | PT_WRITABLE_MASK | PT_USER_MASK)
+
 #define PT64_BASE_ADDR_MASK (((1ULL << 52) - 1) & ~(u64)(PAGE_SIZE-1))
 #define PT_FIRST_AVAIL_BITS_SHIFT 10
 #define SPTE_MMU_WRITEABLE	(1ULL << (PT_FIRST_AVAIL_BITS_SHIFT + 1))
@@ -274,14 +276,66 @@ void rr_set_mmio_spte_mask(u64 mmio_mask)
 }
 EXPORT_SYMBOL_GPL(rr_set_mmio_spte_mask);
 
-static inline void rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
-					  u64 perm_mask)
+static inline void rr_pt_set_read_tag(u64 *sptep)
+{
+	u64 spte = *sptep;
+
+	RR_ASSERT(!(spte & RR_PT_CREW_READ_TAG));
+	spte |= RR_PT_CREW_READ_TAG;
+	spte |= ((spte & RR_PT_CREW_PERM_MASK) << RR_PT_CREW_PERM_SHIFT);
+	*sptep = spte;
+}
+
+static inline void rr_pt_clear_read_tag(u64 *sptep)
+{
+	u64 spte = *sptep;
+
+	spte &= ~RR_PT_CREW_READ_TAG;
+	spte &= ~(RR_PT_CREW_PERM_MASK << RR_PT_CREW_PERM_SHIFT);
+	*sptep = spte;
+}
+
+static inline void rr_pt_restore_perm(u64 *sptep)
+{
+	u64 spte = *sptep;
+
+	spte &= ~RR_PT_CREW_PERM_MASK;
+	spte |= ((spte >> RR_PT_CREW_PERM_SHIFT) & RR_PT_CREW_PERM_MASK);
+	*sptep = spte;
+}
+
+static inline bool rr_pt_check_read_tag(u64 spte)
+{
+	return (spte & RR_PT_CREW_READ_TAG) != 0;
+}
+
+/* Fix a tagged spte. All permission of this spte was removed. But in some
+ * cases, we need to fix it.
+ */
+void rr_fix_tagged_spte(u64 *sptep, const char *func_name)
+{
+	u64 spte = *sptep;
+
+	RR_ASSERT(sptep);
+	spte = *sptep;
+	if (rr_pt_check_read_tag(spte)) {
+		rr_pt_restore_perm(sptep);
+		rr_pt_clear_read_tag(sptep);
+		RR_DLOG(MMU, "%s: fix spte=0x%llx -> 0x%llx", func_name,
+			spte, *sptep);
+	}
+}
+EXPORT_SYMBOL_GPL(rr_fix_tagged_spte);
+
+static inline bool rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
+					  int write)
 {
 	int level = vcpu->arch.mmu.shadow_root_level;
 	hpa_t addr = (u64)gfn << PAGE_SHIFT;
 	hpa_t shadow_addr = vcpu->arch.mmu.root_hpa;
 	unsigned index;
 	u64 *sptep;
+	u64 old_spte;
 
 	RR_ASSERT(level == PT64_ROOT_LEVEL);
 	RR_ASSERT(shadow_addr != INVALID_PAGE);
@@ -289,23 +343,33 @@ static inline void rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
 	for (; level >= PT_PAGE_TABLE_LEVEL; --level) {
 		index = SHADOW_PT_INDEX(addr, level);
 		sptep = ((u64 *)__va(shadow_addr)) + index;
-		if (unlikely(!is_shadow_present_pte(*sptep))) {
-			return;
+		old_spte = *sptep;
+		if (unlikely(!is_shadow_present_pte(old_spte))) {
+			return false;
 		}
-		if (is_last_spte(*sptep, level)) {
-			*sptep &= perm_mask;
-			return;
+		if (is_last_spte(old_spte, level)) {
+			if (write) {
+				rr_pt_set_read_tag(sptep);
+				*sptep &= ~RR_PT_ALL;
+			} else {
+				rr_fix_tagged_spte(sptep, __func__);
+				*sptep &= ~PT_WRITABLE_MASK;
+			}
+			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx spte=0x%llx -> 0x%llx",
+				vcpu->vcpu_id, gfn, old_spte, *sptep);
+			return true;
 		}
 		shadow_addr = *sptep & PT64_BASE_ADDR_MASK;
 	}
+	return false;
 }
 
 /* Should be called within krr_info.crew_lock.
  * Change ept of all vcpus and add a req node to the krr_info.req_list.
+ * Should not change spte here because spte may be overwritten later.
  */
-unsigned rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
+void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 {
-	unsigned pte_access = ACC_ALL;
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 	struct kvm *kvm = vcpu->kvm;
 	struct rr_kvm_info *krr_info = &kvm->rr_info;
@@ -313,7 +377,7 @@ unsigned rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 	int online_vcpus = atomic_read(&kvm->online_vcpus);
 	int i;
 	struct kvm_vcpu *vcpu_iter;
-	u64 perm_mask = ~(PT_WRITABLE_MASK | PT_PRESENT_MASK | PT_USER_MASK);
+	bool need_tlb_flush = false;
 
 	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d", vcpu->vcpu_id,
 		gfn, write);
@@ -325,10 +389,6 @@ unsigned rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 
 	rr_make_request(RR_REQ_TLB_FLUSH, vrr_info);
 
-	if (!write) {
-		pte_access = ACC_EXEC_MASK | ACC_USER_MASK;
-		perm_mask = ~PT_WRITABLE_MASK;
-	}
 	list_add_tail(&req->link, &krr_info->req_list);
 
 	/* Set other vcpus' ept */
@@ -336,21 +396,29 @@ unsigned rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 		vcpu_iter = kvm->vcpus[i];
 		if (vcpu_iter == vcpu)
 			continue;
-		// rr_ept_set_perm_by_gfn(vcpu_iter, gfn, perm_mask);
+		if (rr_ept_set_perm_by_gfn(vcpu_iter, gfn, write))
+			need_tlb_flush = true;
 	}
 
-	return pte_access;
+	if (need_tlb_flush)
+		rr_make_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info);
 }
 EXPORT_SYMBOL_GPL(rr_request_perm);
 
 /* After page_fault handler, we need to sync with other vcpus */
 void rr_request_perm_post(struct kvm_vcpu *vcpu)
 {
-	struct rr_perm_req *my_req = &vcpu->rr_info.perm_req;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+	struct rr_perm_req *my_req = &vrr_info->perm_req;
 
-	if (my_req->is_valid && my_req->nr_ack_left > 0) {
-		RR_DLOG(MMU, "vcpu=%d flush remote tlbs", vcpu->vcpu_id);
-		kvm_flush_remote_tlbs(vcpu->kvm);
+	if (rr_check_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info)) {
+		rr_clear_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info);
+
+		if (my_req->is_valid && (my_req->nr_ack_left > 0)) {
+			RR_DLOG(MMU, "vcpu=%d flush remote tlbs",
+				vcpu->vcpu_id);
+			kvm_flush_remote_tlbs(vcpu->kvm);
+		}
 	}
 }
 EXPORT_SYMBOL_GPL(rr_request_perm_post);

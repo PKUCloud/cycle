@@ -1226,6 +1226,8 @@ static bool __rmap_write_protect(struct kvm *kvm, unsigned long *rmapp,
 	bool flush = false;
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;) {
+		if (kvm->rr_info.enabled)
+			rr_fix_tagged_spte(sptep, __func__);
 		BUG_ON(!(*sptep & PT_PRESENT_MASK));
 		if (spte_write_protect(kvm, sptep, &flush, pt_protect)) {
 			sptep = rmap_get_first(*rmapp, &iter);
@@ -1290,6 +1292,8 @@ static int kvm_unmap_rmapp(struct kvm *kvm, unsigned long *rmapp,
 	int need_tlb_flush = 0;
 
 	while ((sptep = rmap_get_first(*rmapp, &iter))) {
+		if (kvm->rr_info.enabled)
+			rr_fix_tagged_spte(sptep, __func__);
 		BUG_ON(!(*sptep & PT_PRESENT_MASK));
 		rmap_printk("kvm_rmap_unmap_hva: spte %p %llx\n", sptep, *sptep);
 
@@ -1314,6 +1318,8 @@ static int kvm_set_pte_rmapp(struct kvm *kvm, unsigned long *rmapp,
 	new_pfn = pte_pfn(*ptep);
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;) {
+		if (kvm->rr_info.enabled)
+			rr_fix_tagged_spte(sptep, __func__);
 		BUG_ON(!is_shadow_present_pte(*sptep));
 		rmap_printk("kvm_set_pte_rmapp: spte %p %llx\n", sptep, *sptep);
 
@@ -1442,6 +1448,8 @@ static int kvm_age_rmapp(struct kvm *kvm, unsigned long *rmapp,
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;
 	     sptep = rmap_get_next(&iter)) {
+		if (kvm->rr_info.enabled)
+			rr_fix_tagged_spte(sptep, __func__);
 		BUG_ON(!is_shadow_present_pte(*sptep));
 
 		if (*sptep & shadow_accessed_mask) {
@@ -1473,6 +1481,8 @@ static int kvm_test_age_rmapp(struct kvm *kvm, unsigned long *rmapp,
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;
 	     sptep = rmap_get_next(&iter)) {
+		if (kvm->rr_info.enabled)
+			rr_fix_tagged_spte(sptep, __func__);
 		BUG_ON(!is_shadow_present_pte(*sptep));
 
 		if (*sptep & shadow_accessed_mask) {
@@ -2523,6 +2533,7 @@ static void mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep,
 {
 	int was_rmapped = 0;
 	int rmap_count;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	pgprintk("%s: spte %llx write_fault %d gfn %llx\n", __func__,
 		 *sptep, write_fault, gfn);
@@ -2540,11 +2551,13 @@ static void mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep,
 			child = page_header(pte & PT64_BASE_ADDR_MASK);
 			drop_parent_pte(child, sptep);
 			kvm_flush_remote_tlbs(vcpu->kvm);
+			rr_clear_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info);
 		} else if (pfn != spte_to_pfn(*sptep)) {
 			pgprintk("hfn old %llx new %llx\n",
 				 spte_to_pfn(*sptep), pfn);
 			drop_spte(vcpu->kvm, sptep);
 			kvm_flush_remote_tlbs(vcpu->kvm);
+			rr_clear_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info);
 		} else
 			was_rmapped = 1;
 	}
@@ -2554,6 +2567,7 @@ static void mmu_set_spte(struct kvm_vcpu *vcpu, u64 *sptep,
 		if (write_fault)
 			*emulate = 1;
 		kvm_mmu_flush_tlb(vcpu);
+		rr_clear_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info);
 	}
 
 	if (unlikely(is_mmio_spte(*sptep) && emulate))
@@ -2703,8 +2717,12 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t v, int write,
 
 	for_each_shadow_entry(vcpu, (u64)gfn << PAGE_SHIFT, iterator) {
 		if (iterator.level == level) {
-			if (vcpu->rr_info.enabled) {
-				pte_access = rr_request_perm(vcpu, gfn, write);
+			if (likely(vcpu->rr_info.enabled)) {
+				if (!write)
+					pte_access = ACC_EXEC_MASK |
+						     ACC_USER_MASK;
+
+				rr_fix_tagged_spte(iterator.sptep, __func__);
 			}
 			mmu_set_spte(vcpu, iterator.sptep, pte_access,
 				     write, &emulate, level, gfn, pfn,
@@ -3451,18 +3469,23 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	spin_lock(&vcpu->kvm->mmu_lock);
 	if (mmu_notifier_retry(vcpu->kvm, mmu_seq))
 		goto out_unlock;
-	spin_lock(&vcpu->kvm->rr_info.crew_lock);
-
-	/* Check if gfn conflic with other vcpus' requests */
-	if (vcpu->rr_info.enabled && !rr_page_fault_check(vcpu, gfn, write))
-		goto out_crew_unlock;
 
 	make_mmu_pages_available(vcpu);
 	if (likely(!force_pt_level))
 		transparent_hugepage_adjust(vcpu, &gfn, &pfn, &level);
+
+	spin_lock(&vcpu->kvm->rr_info.crew_lock);
+	/* Check if gfn conflic with other vcpus' requests */
+	if (likely(vcpu->rr_info.enabled)) {
+		if (!rr_page_fault_check(vcpu, gfn, write))
+			goto out_crew_unlock;
+		if (!is_noslot_pfn(pfn))
+			rr_request_perm(vcpu, gfn, write);
+	}
+	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+
 	r = __direct_map(vcpu, gpa, write, map_writable,
 			 level, gfn, pfn, prefault);
-	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
 	spin_unlock(&vcpu->kvm->mmu_lock);
 
 	return r;
