@@ -5863,9 +5863,6 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		rr_clear_request(RR_REQ_TLB_FLUSH, vrr_info);
 	}
 
-	if (vrr_info->perm_req.is_valid)
-		rr_clear_perm_req(vcpu);
-
 	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
 
 	if (req_immediate_exit)
@@ -5918,6 +5915,9 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	preempt_enable();
 
 	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
+
+	if (vrr_info->perm_req.is_valid)
+		rr_clear_perm_req(vcpu);
 
 	/*
 	 * Profile KVM exit RIPs:

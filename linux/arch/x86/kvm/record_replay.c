@@ -312,17 +312,12 @@ static inline bool rr_pt_check_read_tag(u64 spte)
 /* Fix a tagged spte. All permission of this spte was removed. But in some
  * cases, we need to fix it.
  */
-void rr_fix_tagged_spte(u64 *sptep, const char *func_name)
+void rr_fix_tagged_spte(u64 *sptep)
 {
-	u64 spte = *sptep;
-
 	RR_ASSERT(sptep);
-	spte = *sptep;
-	if (rr_pt_check_read_tag(spte)) {
+	if (rr_pt_check_read_tag(*sptep)) {
 		rr_pt_restore_perm(sptep);
 		rr_pt_clear_read_tag(sptep);
-		RR_DLOG(MMU, "%s: fix spte=0x%llx -> 0x%llx", func_name,
-			spte, *sptep);
 	}
 }
 EXPORT_SYMBOL_GPL(rr_fix_tagged_spte);
@@ -352,7 +347,7 @@ static inline bool rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
 				rr_pt_set_read_tag(sptep);
 				*sptep &= ~RR_PT_ALL;
 			} else {
-				rr_fix_tagged_spte(sptep, __func__);
+				rr_fix_tagged_spte(sptep);
 				*sptep &= ~PT_WRITABLE_MASK;
 			}
 			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx spte=0x%llx -> 0x%llx",
@@ -415,8 +410,6 @@ void rr_request_perm_post(struct kvm_vcpu *vcpu)
 		rr_clear_request(RR_REQ_REMOTE_TLB_FLUSH, vrr_info);
 
 		if (my_req->is_valid && (my_req->nr_ack_left > 0)) {
-			RR_DLOG(MMU, "vcpu=%d flush remote tlbs",
-				vcpu->vcpu_id);
 			kvm_flush_remote_tlbs(vcpu->kvm);
 		}
 	}
@@ -440,7 +433,6 @@ void rr_handle_perm_req(struct kvm_vcpu *vcpu)
 	struct rr_perm_req *req;
 	struct list_head *head = &krr_info->req_list;
 
-	RR_DLOG(MMU, "vcpu=%d", vcpu->vcpu_id);
 	spin_lock(&krr_info->crew_lock);
 	list_for_each_entry(req, head, link) {
 		if (req->vcpu_id == vcpu->vcpu_id)
@@ -458,7 +450,6 @@ void rr_clear_perm_req(struct kvm_vcpu *vcpu)
 {
 	struct rr_perm_req *my_req = &vcpu->rr_info.perm_req;
 
-	RR_DLOG(MMU, "vcpu=%d", vcpu->vcpu_id);
 	RR_ASSERT(my_req->is_valid);
 	spin_lock(&vcpu->kvm->rr_info.crew_lock);
 	list_del(&my_req->link);
@@ -481,14 +472,10 @@ int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 		RR_ASSERT(req->vcpu_id != vcpu->vcpu_id);
 		RR_ASSERT(req->is_valid);
 		if (req->gfn == gfn) {
-			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d check fail",
-				vcpu->vcpu_id, gfn, write);
 			return 0;
 		}
 	}
 
-	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d check pass",
-		vcpu->vcpu_id, gfn, write);
 	return 1;
 }
 EXPORT_SYMBOL_GPL(rr_page_fault_check);

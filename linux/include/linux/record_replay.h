@@ -72,7 +72,7 @@ void rr_handle_perm_req(struct kvm_vcpu *vcpu);
 void rr_clear_perm_req(struct kvm_vcpu *vcpu);
 void rr_set_mmio_spte_mask(u64 mmio_mask);
 int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write);
-void rr_fix_tagged_spte(u64 *sptep, const char *func_name);
+void rr_fix_tagged_spte(u64 *sptep);
 
 static inline void rr_make_request(int req, struct rr_vcpu_info *rr_info)
 {

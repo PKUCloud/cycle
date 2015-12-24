@@ -1226,7 +1226,7 @@ static bool __rmap_write_protect(struct kvm *kvm, unsigned long *rmapp,
 	bool flush = false;
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;) {
-		rr_fix_tagged_spte(sptep, __func__);
+		rr_fix_tagged_spte(sptep);
 		BUG_ON(!(*sptep & PT_PRESENT_MASK));
 		if (spte_write_protect(kvm, sptep, &flush, pt_protect)) {
 			sptep = rmap_get_first(*rmapp, &iter);
@@ -1291,7 +1291,7 @@ static int kvm_unmap_rmapp(struct kvm *kvm, unsigned long *rmapp,
 	int need_tlb_flush = 0;
 
 	while ((sptep = rmap_get_first(*rmapp, &iter))) {
-		rr_fix_tagged_spte(sptep, __func__);
+		rr_fix_tagged_spte(sptep);
 		BUG_ON(!(*sptep & PT_PRESENT_MASK));
 		rmap_printk("kvm_rmap_unmap_hva: spte %p %llx\n", sptep, *sptep);
 
@@ -1316,7 +1316,7 @@ static int kvm_set_pte_rmapp(struct kvm *kvm, unsigned long *rmapp,
 	new_pfn = pte_pfn(*ptep);
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;) {
-		rr_fix_tagged_spte(sptep, __func__);
+		rr_fix_tagged_spte(sptep);
 		BUG_ON(!is_shadow_present_pte(*sptep));
 		rmap_printk("kvm_set_pte_rmapp: spte %p %llx\n", sptep, *sptep);
 
@@ -1445,7 +1445,7 @@ static int kvm_age_rmapp(struct kvm *kvm, unsigned long *rmapp,
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;
 	     sptep = rmap_get_next(&iter)) {
-		rr_fix_tagged_spte(sptep, __func__);
+		rr_fix_tagged_spte(sptep);
 		BUG_ON(!is_shadow_present_pte(*sptep));
 
 		if (*sptep & shadow_accessed_mask) {
@@ -1477,7 +1477,7 @@ static int kvm_test_age_rmapp(struct kvm *kvm, unsigned long *rmapp,
 
 	for (sptep = rmap_get_first(*rmapp, &iter); sptep;
 	     sptep = rmap_get_next(&iter)) {
-		rr_fix_tagged_spte(sptep, __func__);
+		rr_fix_tagged_spte(sptep);
 		BUG_ON(!is_shadow_present_pte(*sptep));
 
 		if (*sptep & shadow_accessed_mask) {
@@ -2717,7 +2717,7 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t v, int write,
 					pte_access = ACC_EXEC_MASK |
 						     ACC_USER_MASK;
 
-				rr_fix_tagged_spte(iterator.sptep, __func__);
+				rr_fix_tagged_spte(iterator.sptep);
 			}
 			mmu_set_spte(vcpu, iterator.sptep, pte_access,
 				     write, &emulate, level, gfn, pfn,
