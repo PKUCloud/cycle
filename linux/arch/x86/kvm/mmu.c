@@ -2709,19 +2709,31 @@ static int __direct_map(struct kvm_vcpu *vcpu, gpa_t v, int write,
 	int emulate = 0;
 	gfn_t pseudo_gfn;
 	unsigned pte_access = ACC_ALL;
+	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	for_each_shadow_entry(vcpu, (u64)gfn << PAGE_SHIFT, iterator) {
 		if (iterator.level == level) {
-			if (likely(vcpu->rr_info.enabled)) {
+			if (likely(vrr_info->enabled)) {
 				if (!write)
 					pte_access = ACC_EXEC_MASK |
 						     ACC_USER_MASK;
+
+				spin_lock(&krr_info->crew_lock);
+				vrr_info->perm_req.sptep = iterator.sptep;
+				spin_unlock(&krr_info->crew_lock);
 
 				rr_fix_tagged_spte(iterator.sptep);
 			}
 			mmu_set_spte(vcpu, iterator.sptep, pte_access,
 				     write, &emulate, level, gfn, pfn,
 				     prefault, map_writable);
+
+			if (vrr_info->perm_req.is_valid) {
+				*(iterator.sptep) &= ~(VMX_EPT_ACCESS_BIT |
+						       VMX_EPT_DIRTY_BIT);
+			}
+
 			/* direct_pte_prefetch(vcpu, iterator.sptep); */
 			++vcpu->stat.pf_fixed;
 			break;

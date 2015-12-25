@@ -2,6 +2,7 @@
 #include <linux/kvm_host.h>
 #include <linux/delay.h>
 #include <asm/logger.h>
+#include <asm/vmx.h>
 
 #include "mmu.h"
 #include "rr_hash.h"
@@ -350,8 +351,8 @@ static inline bool rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
 				rr_fix_tagged_spte(sptep);
 				*sptep &= ~PT_WRITABLE_MASK;
 			}
-			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx spte=0x%llx -> 0x%llx",
-				vcpu->vcpu_id, gfn, old_spte, *sptep);
+			RR_DLOG(MMU, "set vcpu=%d gfn=0x%llx spte=0x%llx -> "
+				"0x%llx", vcpu->vcpu_id, gfn, old_spte, *sptep);
 			return true;
 		}
 		shadow_addr = *sptep & PT64_BASE_ADDR_MASK;
@@ -361,7 +362,6 @@ static inline bool rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
 
 /* Should be called within krr_info.crew_lock.
  * Change ept of all vcpus and add a req node to the krr_info.req_list.
- * Should not change spte here because spte may be overwritten later.
  */
 void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 {
@@ -380,6 +380,7 @@ void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 	req->write = write;
 	req->is_valid = true;
 	req->nr_ack_left = online_vcpus - 1;
+	req->sptep = NULL;
 	memset(req->acks, 0, sizeof(req->acks));
 
 	rr_make_request(RR_REQ_TLB_FLUSH, vrr_info);
@@ -458,6 +459,18 @@ void rr_clear_perm_req(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(rr_clear_perm_req);
 
+
+/* If one req is not accessed, we should not kick it out even if both gfns are
+ * not conflicted.
+ */
+static inline bool rr_perm_req_conflict(struct rr_perm_req *req)
+{
+	u64 spte = *req->sptep;
+
+	RR_ASSERT(req->is_valid);
+	return !(spte & VMX_EPT_ACCESS_BIT);
+}
+
 /* Should be called within krr_info.crew_lock.
  * Check if there is any req in the krr_info.req_list conflict with @gfn.
  * Return 0 indicates there is conflict and should not continue page fault
@@ -465,17 +478,32 @@ EXPORT_SYMBOL_GPL(rr_clear_perm_req);
  */
 int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 {
-	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
 	struct rr_perm_req *req;
+	struct rr_perm_req *my_req = &vcpu->rr_info.perm_req;
+	struct list_head *head = &vcpu->kvm->rr_info.req_list;
 
-	list_for_each_entry(req, &krr_info->req_list, link) {
+	if (my_req->is_valid) {
+		RR_DLOG(MMU, "error: vcpu=%d go for gfn=0x%llx write=%d "
+			"without accessing last req gfn=0x%llx wirte=%d",
+			vcpu->vcpu_id, gfn, write, my_req->gfn, my_req->write);
+		/* Remove last req from the global list and then add
+		 * back to it later in rr_request_perm().
+		 */
+		list_del(&my_req->link);
+		my_req->is_valid = false;
+	}
+
+	list_for_each_entry(req, head, link) {
 		RR_ASSERT(req->vcpu_id != vcpu->vcpu_id);
-		RR_ASSERT(req->is_valid);
-		if (req->gfn == gfn) {
+		if (rr_perm_req_conflict(req)) {
+			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d fail",
+				vcpu->vcpu_id, gfn, write);
 			return 0;
 		}
 	}
 
+	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d pass",
+		vcpu->vcpu_id, gfn, write);
 	return 1;
 }
 EXPORT_SYMBOL_GPL(rr_page_fault_check);

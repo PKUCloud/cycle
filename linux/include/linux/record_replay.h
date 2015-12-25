@@ -33,6 +33,7 @@ struct rr_perm_req {
 	int nr_ack_left;
 	bool acks[RR_MAX_VCPUS];
 	int vcpu_id;
+	u64 *sptep;
 };
 
 /* Record and replay control info for a particular vcpu */

@@ -64,6 +64,7 @@
 #include <asm/xcr.h>
 #include <asm/pvclock.h>
 #include <asm/div64.h>
+#include <asm/logger.h>
 
 #define MAX_IO_MSRS 256
 #define KVM_MAX_MCE_BANKS 32
@@ -5916,8 +5917,15 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
 
-	if (vrr_info->perm_req.is_valid)
-		rr_clear_perm_req(vcpu);
+	if (vrr_info->perm_req.is_valid) {
+		u64 spte = *(vrr_info->perm_req.sptep);
+		if (spte & VMX_EPT_ACCESS_BIT)
+			rr_clear_perm_req(vcpu);
+		else
+			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx spte=0x%llx not "
+				"accessed", vcpu->vcpu_id,
+				vrr_info->perm_req.gfn, spte);
+	}
 
 	/*
 	 * Profile KVM exit RIPs:
