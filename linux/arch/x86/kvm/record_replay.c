@@ -378,14 +378,19 @@ void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 		gfn, write);
 	req->gfn = gfn;
 	req->write = write;
-	req->is_valid = true;
 	req->nr_ack_left = online_vcpus - 1;
 	req->sptep = NULL;
 	memset(req->acks, 0, sizeof(req->acks));
 
 	rr_make_request(RR_REQ_TLB_FLUSH, vrr_info);
 
-	list_add_tail(&req->link, &krr_info->req_list);
+	/* If it is already valid, it means that this vcpu page fault again
+	 * before accessing the last one.
+	 */
+	if (!req->is_valid) {
+		req->is_valid = true;
+		list_add_tail(&req->link, &krr_info->req_list);
+	}
 
 	/* Set other vcpus' ept */
 	for (i = 0; i < online_vcpus; ++i) {
@@ -463,12 +468,18 @@ EXPORT_SYMBOL_GPL(rr_clear_perm_req);
 /* If one req is not accessed, we should not kick it out even if both gfns are
  * not conflicted.
  */
-static inline bool rr_perm_req_conflict(struct rr_perm_req *req)
+static inline bool rr_perm_req_conflict(struct rr_perm_req *req, gfn_t gfn)
 {
-	u64 spte = *req->sptep;
+	u64 *sptep = req->sptep;
 
 	RR_ASSERT(req->is_valid);
-	return !(spte & VMX_EPT_ACCESS_BIT);
+	/* if sptep is NULL, it means that vcpu is in __direct_map and has not
+	 * set the sptep yet.
+	 */
+	if (!sptep)
+		return req->gfn == gfn;
+	else
+		return !(*sptep & VMX_EPT_ACCESS_BIT);
 }
 
 /* Should be called within krr_info.crew_lock.
@@ -479,23 +490,13 @@ static inline bool rr_perm_req_conflict(struct rr_perm_req *req)
 int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 {
 	struct rr_perm_req *req;
-	struct rr_perm_req *my_req = &vcpu->rr_info.perm_req;
 	struct list_head *head = &vcpu->kvm->rr_info.req_list;
 
-	if (my_req->is_valid) {
-		RR_DLOG(MMU, "error: vcpu=%d go for gfn=0x%llx write=%d "
-			"without accessing last req gfn=0x%llx wirte=%d",
-			vcpu->vcpu_id, gfn, write, my_req->gfn, my_req->write);
-		/* Remove last req from the global list and then add
-		 * back to it later in rr_request_perm().
-		 */
-		list_del(&my_req->link);
-		my_req->is_valid = false;
-	}
-
 	list_for_each_entry(req, head, link) {
-		RR_ASSERT(req->vcpu_id != vcpu->vcpu_id);
-		if (rr_perm_req_conflict(req)) {
+		if (req->vcpu_id == vcpu->vcpu_id)
+			continue;
+
+		if (rr_perm_req_conflict(req, gfn)) {
 			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d fail",
 				vcpu->vcpu_id, gfn, write);
 			return 0;
