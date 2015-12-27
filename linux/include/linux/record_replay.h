@@ -20,6 +20,8 @@ struct kvm_vcpu;
 
 #define RR_MAX_VCPUS			16
 
+#define RR_MAX_NOT_ACCESSED		4
+
 /* Whether this spte has been withdrawn read permission by CREW */
 #define RR_PT_CREW_READ_TAG		(1ULL << 52)
 /* Hints for the original permission info of this spte */
@@ -36,6 +38,7 @@ struct rr_perm_req {
 	int vcpu_id;
 	u64 *sptep;
 	wait_queue_head_t queue;
+	u64 nr_not_accessed;
 };
 
 /* Record and replay control info for a particular vcpu */

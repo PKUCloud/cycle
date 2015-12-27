@@ -5737,6 +5737,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		vcpu->run->request_interrupt_window;
 	bool req_immediate_exit = false;
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+	struct rr_perm_req *my_req = &(vcpu->rr_info.perm_req);
 
 	if (vcpu->requests) {
 		if (kvm_check_request(KVM_REQ_MMU_RELOAD, vcpu))
@@ -5917,14 +5918,18 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
 
-	if (vrr_info->perm_req.is_valid) {
-		u64 spte = *(vrr_info->perm_req.sptep);
+	if (my_req->is_valid) {
+		u64 spte = *(my_req->sptep);
 		if (spte & VMX_EPT_ACCESS_BIT)
 			rr_clear_perm_req(vcpu);
-		else
-			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx spte=0x%llx not "
-				"accessed", vcpu->vcpu_id,
-				vrr_info->perm_req.gfn, spte);
+		else {
+			if (++(my_req->nr_not_accessed) > RR_MAX_NOT_ACCESSED)
+				rr_clear_perm_req(vcpu);
+
+			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx spte=0x%llx "
+				"nr_not_acc=%llu not accessed", vcpu->vcpu_id,
+				my_req->gfn, spte, my_req->nr_not_accessed);
+		}
 	}
 
 	/*

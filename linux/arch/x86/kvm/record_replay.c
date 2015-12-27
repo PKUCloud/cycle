@@ -399,6 +399,7 @@ void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 	 */
 	if (!req->is_valid) {
 		req->is_valid = true;
+		req->nr_not_accessed = 0;
 		list_add_tail(&req->link, &krr_info->req_list);
 	}
 
