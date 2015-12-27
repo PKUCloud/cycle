@@ -5,6 +5,7 @@
 #include <linux/kvm_types.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
+#include <linux/wait.h>
 
 struct kvm;
 struct kvm_vcpu;
@@ -34,6 +35,7 @@ struct rr_perm_req {
 	bool acks[RR_MAX_VCPUS];
 	int vcpu_id;
 	u64 *sptep;
+	wait_queue_head_t queue;
 };
 
 /* Record and replay control info for a particular vcpu */
@@ -72,8 +74,9 @@ void rr_request_perm_post(struct kvm_vcpu *vcpu);
 void rr_handle_perm_req(struct kvm_vcpu *vcpu);
 void rr_clear_perm_req(struct kvm_vcpu *vcpu);
 void rr_set_mmio_spte_mask(u64 mmio_mask);
-int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write);
 void rr_fix_tagged_spte(u64 *sptep);
+struct rr_perm_req *rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn,
+					int write);
 
 static inline void rr_make_request(int req, struct rr_vcpu_info *rr_info)
 {

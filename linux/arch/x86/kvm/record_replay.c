@@ -86,6 +86,7 @@ static void __rr_vcpu_enable(struct kvm_vcpu *vcpu)
 
 	vrr_info->requests = 0;
 	vrr_info->perm_req.vcpu_id = vcpu->vcpu_id;
+	init_waitqueue_head(&(vrr_info->perm_req.queue));
 	vrr_info->enabled = true;
 
 	RR_DLOG(INIT, "vcpu=%d rr_vcpu_info initialized", vcpu->vcpu_id);
@@ -188,6 +189,7 @@ static int __rr_crew_post_disable(struct kvm_vcpu *vcpu)
 	struct hlist_node *tmp;
 	struct rr_gfn_state *gfnsta;
 	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
+	struct rr_perm_req *req, *tmp_req;
 
 	vcpu->kvm->arch.mmu_valid_gen++;
 
@@ -200,11 +202,19 @@ static int __rr_crew_post_disable(struct kvm_vcpu *vcpu)
 		}
 	}
 	rr_clear_hash(&krr_info->gfn_hash);
+
+	/* Clear perm_req list */
+	list_for_each_entry_safe(req, tmp_req, &vcpu->kvm->rr_info.req_list,
+				 link) {
+		list_del(&req->link);
+	}
 	return 0;
 }
 
 void rr_vcpu_disable(struct kvm_vcpu *vcpu)
 {
+	vcpu->rr_info.perm_req.is_valid = false;
+	wake_up_interruptible(&vcpu->rr_info.perm_req.queue);
 	__rr_vcpu_sync(vcpu, __rr_crew_disable, __rr_crew_disable,
 		       __rr_crew_post_disable);
 
@@ -351,7 +361,7 @@ static inline bool rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
 				rr_fix_tagged_spte(sptep);
 				*sptep &= ~PT_WRITABLE_MASK;
 			}
-			RR_DLOG(MMU, "set vcpu=%d gfn=0x%llx spte=0x%llx -> "
+			RR_DLOG(MMU, "set v=%d gfn=0x%llx spte=0x%llx -> "
 				"0x%llx", vcpu->vcpu_id, gfn, old_spte, *sptep);
 			return true;
 		}
@@ -461,6 +471,7 @@ void rr_clear_perm_req(struct kvm_vcpu *vcpu)
 	list_del(&my_req->link);
 	my_req->is_valid = false;
 	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+	wake_up_interruptible(&my_req->queue);
 }
 EXPORT_SYMBOL_GPL(rr_clear_perm_req);
 
@@ -472,7 +483,6 @@ static inline bool rr_perm_req_conflict(struct rr_perm_req *req, gfn_t gfn)
 {
 	u64 *sptep = req->sptep;
 
-	RR_ASSERT(req->is_valid);
 	/* if sptep is NULL, it means that vcpu is in __direct_map and has not
 	 * set the sptep yet.
 	 */
@@ -487,7 +497,8 @@ static inline bool rr_perm_req_conflict(struct rr_perm_req *req, gfn_t gfn)
  * Return 0 indicates there is conflict and should not continue page fault
  * handling.
  */
-int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
+struct rr_perm_req *rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn,
+					int write)
 {
 	struct rr_perm_req *req;
 	struct list_head *head = &vcpu->kvm->rr_info.req_list;
@@ -496,16 +507,22 @@ int rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 		if (req->vcpu_id == vcpu->vcpu_id)
 			continue;
 
+		/* When disabled, the req in the list may be invalid */
+		if (unlikely(!req->is_valid)) {
+			RR_ASSERT(!rr_ctrl.enabled);
+			continue;
+		}
+
 		if (rr_perm_req_conflict(req, gfn)) {
 			RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d fail",
 				vcpu->vcpu_id, gfn, write);
-			return 0;
+			return req;
 		}
 	}
 
 	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d pass",
 		vcpu->vcpu_id, gfn, write);
-	return 1;
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(rr_page_fault_check);
 

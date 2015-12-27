@@ -3436,6 +3436,7 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	unsigned long mmu_seq;
 	int write = error_code & PFERR_WRITE_MASK;
 	bool map_writable;
+	struct rr_perm_req *req;
 
 	ASSERT(vcpu);
 	ASSERT(VALID_PAGE(vcpu->arch.mmu.root_hpa));
@@ -3473,23 +3474,27 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	if (handle_abnormal_pfn(vcpu, 0, gfn, pfn, ACC_ALL, &r))
 		return r;
 
+rr_perm_retry:
 	spin_lock(&vcpu->kvm->mmu_lock);
 	if (mmu_notifier_retry(vcpu->kvm, mmu_seq))
 		goto out_unlock;
 
+	/* Check if gfn conflic with other vcpus' requests */
+	if (likely(vcpu->rr_info.enabled) && !is_noslot_pfn(pfn)) {
+		spin_lock(&vcpu->kvm->rr_info.crew_lock);
+
+		req = rr_page_fault_check(vcpu, gfn, write);
+		if (req) {
+			goto out_crew_unlock;
+		}
+		rr_request_perm(vcpu, gfn, write);
+
+		spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+	}
+
 	make_mmu_pages_available(vcpu);
 	if (likely(!force_pt_level))
 		transparent_hugepage_adjust(vcpu, &gfn, &pfn, &level);
-
-	spin_lock(&vcpu->kvm->rr_info.crew_lock);
-	/* Check if gfn conflic with other vcpus' requests */
-	if (likely(vcpu->rr_info.enabled)) {
-		if (!rr_page_fault_check(vcpu, gfn, write))
-			goto out_crew_unlock;
-		if (!is_noslot_pfn(pfn))
-			rr_request_perm(vcpu, gfn, write);
-	}
-	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
 
 	r = __direct_map(vcpu, gpa, write, map_writable,
 			 level, gfn, pfn, prefault);
@@ -3499,6 +3504,10 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 
 out_crew_unlock:
 	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+	spin_unlock(&vcpu->kvm->mmu_lock);
+	wait_event_interruptible(req->queue, !req->is_valid);
+	goto rr_perm_retry;
+
 out_unlock:
 	spin_unlock(&vcpu->kvm->mmu_lock);
 	kvm_release_pfn_clean(pfn);
