@@ -40,6 +40,7 @@
 #include <asm/cmpxchg.h>
 #include <asm/io.h>
 #include <asm/vmx.h>
+#include <asm/logger.h>
 
 /*
  * When setting this variable to true it enables Two-Dimensional-Paging
@@ -2887,6 +2888,88 @@ fast_pf_fix_direct_spte(struct kvm_vcpu *vcpu, u64 *sptep, u64 spte)
 	return true;
 }
 
+static bool rr_fast_page_fault(struct kvm_vcpu *vcpu, gva_t gva, int level,
+			       u32 error_code)
+{
+	struct kvm_shadow_walk_iterator iterator;
+	bool ret = false;
+	u64 spte = 0ull;
+	gfn_t gfn = gva >> PAGE_SHIFT;
+	u64 *sptep;
+	int write = error_code & PFERR_WRITE_MASK;
+	struct rr_perm_req *req;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+	unsigned long mmu_seq;
+
+	if (unlikely(error_code & PFERR_RSVD_MASK))
+		return false;
+
+	walk_shadow_page_lockless_begin(vcpu);
+	for_each_shadow_entry_lockless(vcpu, gva, iterator, spte)
+		if (!is_shadow_present_pte(spte) || iterator.level < level)
+			break;
+
+	if (!is_last_spte(spte, level))
+		goto exit;
+
+	if (!(spte & RR_PT_CREW_READ_TAG))
+		goto exit;
+
+	/* Fast page fault fix */
+	sptep = iterator.sptep;
+	walk_shadow_page_lockless_end(vcpu);
+
+	mmu_seq = vcpu->kvm->mmu_notifier_seq;
+	smp_rmb();
+
+rr_perm_retry:
+	spin_lock(&vcpu->kvm->mmu_lock);
+	if (mmu_notifier_retry(vcpu->kvm, mmu_seq))
+		goto out_mmu_unlock;
+
+	if (spte != *sptep)
+		goto out_mmu_unlock;
+
+	spin_lock(&vcpu->kvm->rr_info.crew_lock);
+	req = rr_page_fault_check(vcpu, gfn, write);
+	if (req) {
+		goto out_crew_unlock;
+	}
+	rr_request_perm(vcpu, gfn, write);
+	vrr_info->perm_req.sptep = sptep;
+	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+
+	rr_fix_tagged_spte(sptep);
+	if (write && !(*sptep & PT_WRITABLE_MASK)) {
+		*sptep |= PT_WRITABLE_MASK;
+		mark_page_dirty(vcpu->kvm, gfn);
+	}
+
+	/* Clear AD bit */
+	*sptep &= ~(VMX_EPT_ACCESS_BIT | VMX_EPT_DIRTY_BIT);
+
+	ret = true;
+	RR_DLOG(MMU, "vcpu=%d fix gfn=0x%llx spte=0x%llx -> 0x%llx",
+		vcpu->vcpu_id, gfn, spte, *sptep);
+
+	spin_unlock(&vcpu->kvm->mmu_lock);
+	return ret;
+
+out_mmu_unlock:
+	spin_unlock(&vcpu->kvm->mmu_lock);
+	return ret;
+
+out_crew_unlock:
+	spin_unlock(&vcpu->kvm->rr_info.crew_lock);
+	spin_unlock(&vcpu->kvm->mmu_lock);
+	wait_event_interruptible(req->queue, !req->is_valid);
+	goto rr_perm_retry;
+
+exit:
+	walk_shadow_page_lockless_end(vcpu);
+	return ret;
+}
+
 /*
  * Return value:
  * - true: let the vcpu to access on the same address again.
@@ -3464,6 +3547,9 @@ static int tdp_page_fault(struct kvm_vcpu *vcpu, gva_t gpa, u32 error_code,
 	if (fast_page_fault(vcpu, gpa, level, error_code))
 		return 0;
 	*/
+	if (likely(vcpu->rr_info.enabled) &&
+	    rr_fast_page_fault(vcpu, gpa, level, error_code))
+		return 0;
 
 	mmu_seq = vcpu->kvm->mmu_notifier_seq;
 	smp_rmb();
