@@ -334,6 +334,20 @@ void rr_fix_tagged_spte(u64 *sptep)
 }
 EXPORT_SYMBOL_GPL(rr_fix_tagged_spte);
 
+/* Macros from vmx.c */
+#define __ex_clear(x, reg) \
+	____kvm_handle_fault_on_reboot(x, "xor " reg " , " reg)
+
+static __always_inline unsigned long vmcs_readl(unsigned long field)
+{
+	unsigned long value;
+
+	asm volatile (__ex_clear(ASM_VMX_VMREAD_RDX_RAX, "%0")
+		      : "=a"(value) : "d"(field) : "cc");
+	return value;
+}
+
+
 static inline bool rr_ept_set_perm_by_gfn(struct kvm_vcpu *vcpu, gfn_t gfn,
 					  int write)
 {
@@ -384,9 +398,15 @@ void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 	int i;
 	struct kvm_vcpu *vcpu_iter;
 	bool need_tlb_flush = false;
+	unsigned long rcx, rip;
 
 	RR_DLOG(MMU, "vcpu=%d gfn=0x%llx write=%d", vcpu->vcpu_id,
 		gfn, write);
+	rcx = kvm_register_read(vcpu, VCPU_REGS_RCX);
+	rip = vmcs_readl(GUEST_RIP);
+	RR_LOG("%d %lx %lx %x 0x%llx %d\n", vcpu->vcpu_id, rip, rcx, 0, gfn,
+	       write);
+
 	req->gfn = gfn;
 	req->write = write;
 	req->nr_ack_left = online_vcpus - 1;
