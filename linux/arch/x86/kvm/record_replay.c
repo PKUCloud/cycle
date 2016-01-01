@@ -87,6 +87,7 @@ static void __rr_vcpu_enable(struct kvm_vcpu *vcpu)
 	vrr_info->requests = 0;
 	vrr_info->perm_req.vcpu_id = vcpu->vcpu_id;
 	init_waitqueue_head(&(vrr_info->perm_req.queue));
+	vrr_info->nr_exits = 0;
 	vrr_info->enabled = true;
 
 	RR_DLOG(INIT, "vcpu=%d rr_vcpu_info initialized", vcpu->vcpu_id);
@@ -167,6 +168,30 @@ int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_enable);
 
+static void __rr_print_sta(struct kvm *kvm)
+{
+	int online_vcpus = atomic_read(&kvm->online_vcpus);
+	int i;
+	struct kvm_vcpu *vcpu_it;
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
+	u64 nr_exits = 0;
+	u64 temp;
+
+	RR_LOG("=== Statistics ===\n");
+	printk(KERN_INFO "=== Statistics ===\n");
+	for (i = 0; i < online_vcpus; ++i) {
+		vcpu_it = kvm->vcpus[i];
+		temp = vcpu_it->rr_info.nr_exits;
+		nr_exits += temp;
+		RR_LOG("vcpu=%d nr_exits=%lld\n", vcpu_it->vcpu_id,
+		       temp);
+		printk(KERN_INFO "vcpu=%d nr_exits=%lld\n", vcpu_it->vcpu_id,
+		       temp);
+	}
+	RR_LOG("total nr_exits=%lld\n", nr_exits);
+	printk(KERN_INFO "total nr_exits=%lld\n", nr_exits);
+}
+
 static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 {
 	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
@@ -174,6 +199,7 @@ static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 
 	if (vrr_info->is_master) {
 		krr_info->enabled = false;
+		__rr_print_sta(vcpu->kvm);
 	}
 
 	vrr_info->enabled = false;

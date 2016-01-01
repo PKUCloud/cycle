@@ -47,6 +47,7 @@ struct rr_vcpu_info {
 	unsigned long requests;	/* Requests bitmap */
 	bool is_master;
 	struct rr_perm_req perm_req;
+	u64 nr_exits;		/* Num of VM-Exit */
 };
 
 /* Record and replay control info for kvm */

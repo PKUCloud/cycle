@@ -5950,6 +5950,7 @@ restart:
 		kvm_lapic_sync_from_vapic(vcpu);
 
 	if (vrr_info->enabled) {
+		++(vrr_info->nr_exits);
 		rr_handle_perm_req(vcpu);
 		if (unlikely(!rr_ctrl.enabled))
 			rr_vcpu_disable(vcpu);
