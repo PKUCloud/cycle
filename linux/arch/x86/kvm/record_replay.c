@@ -173,7 +173,6 @@ static void __rr_print_sta(struct kvm *kvm)
 	int online_vcpus = atomic_read(&kvm->online_vcpus);
 	int i;
 	struct kvm_vcpu *vcpu_it;
-	struct rr_kvm_info *krr_info = &kvm->rr_info;
 	u64 nr_exits = 0;
 	u64 temp;
 
