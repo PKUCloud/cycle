@@ -57,6 +57,7 @@ struct rr_kvm_info {
 	struct hlist_head *gfn_hash;	/* Hash table for gfn state */
 	spinlock_t crew_lock;
 	struct list_head req_list;
+	atomic_t in_dma;		/* Whether we are in a dma process */
 };
 
 struct rr_gfn_state {

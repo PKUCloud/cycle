@@ -148,6 +148,7 @@ void rr_kvm_info_init(struct rr_kvm_info *rr_kvm_info)
 	atomic_set(&rr_kvm_info->nr_fin_vcpus, 0);
 	spin_lock_init(&rr_kvm_info->crew_lock);
 	INIT_LIST_HEAD(&rr_kvm_info->req_list);
+	atomic_set(&rr_kvm_info->in_dma, 0);
 
 	RR_DLOG(INIT, "rr_kvm_info initialized partially");
 }

@@ -5739,6 +5739,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 	struct rr_perm_req *my_req = &(vcpu->rr_info.perm_req);
 
+restart:
 	if (vcpu->requests) {
 		if (kvm_check_request(KVM_REQ_MMU_RELOAD, vcpu))
 			kvm_mmu_unload(vcpu);
@@ -5831,6 +5832,8 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	if (vrr_info->enabled) {
 		rr_handle_perm_req(vcpu);
+		if (atomic_read(&(vcpu->kvm->rr_info.in_dma)) == 1)
+			goto restart;
 	}
 
 	preempt_disable();

@@ -1902,6 +1902,30 @@ static int create_vcpu_fd(struct kvm_vcpu *vcpu)
 	return anon_inode_getfd("kvm-vcpu", &kvm_vcpu_fops, vcpu, O_RDWR);
 }
 
+/* Record and replay */
+static int rr_kvm_vm_ioctl_set_dma_info(struct kvm *kvm,
+					struct rr_dma_info *dma_info)
+{
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
+
+	switch (dma_info->cmd) {
+	case RR_DMA_SET_DATA:
+		break;
+	case RR_DMA_START:
+		RR_DLOG(MMU, "DMA starts");
+		atomic_set(&krr_info->in_dma, 1);
+		kvm_flush_remote_tlbs(kvm);
+		break;
+	case RR_DMA_FINISH:
+		RR_DLOG(MMU, "DMA finishes");
+		atomic_set(&krr_info->in_dma, 0);
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
 /*
  * Creates some virtual cpus.  Good luck creating more than one.
  */
@@ -2326,10 +2350,27 @@ static long kvm_vm_ioctl(struct file *filp,
 	struct kvm *kvm = filp->private_data;
 	void __user *argp = (void __user *)arg;
 	int r;
+	struct rr_dma_info rr_dma_info;
 
 	if (kvm->mm != current->mm)
 		return -EIO;
 	switch (ioctl) {
+	/* Record and replay */
+	case KVM_DMA_COMMIT: {
+		if (unlikely(!kvm->rr_info.enabled)) {
+			if (atomic_read(&(kvm->rr_info.in_dma)) == 1) {
+				/* DMA is holding the sem after disabling. */
+				atomic_set(&(kvm->rr_info.in_dma), 0);
+			}
+			return 0;
+		}
+		r = -EFAULT;
+		if (copy_from_user(&rr_dma_info, argp, sizeof(rr_dma_info)))
+			goto out;
+
+		r = rr_kvm_vm_ioctl_set_dma_info(kvm, &rr_dma_info);
+		break;
+	}
 	case KVM_CREATE_VCPU:
 		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
 		break;

@@ -889,6 +889,20 @@ struct kvm_device_attr {
 #define KVM_SET_TSS_ADDR          _IO(KVMIO,   0x47)
 #define KVM_SET_IDENTITY_MAP_ADDR _IOW(KVMIO,  0x48, __u64)
 
+/* Record and replay */
+#define KVM_DMA_COMMIT		  _IOWR(KVMIO, 0x49, struct rr_dma_info)
+
+#define RR_DMA_START		  0
+#define RR_DMA_FINISH		  1
+#define RR_DMA_SET_DATA		  2
+
+#define RR_DMA_INFO_GFN_SIZE	  32
+struct rr_dma_info {
+	int cmd;
+	int size;
+	__u32 gfn[RR_DMA_INFO_GFN_SIZE];
+};
+
 /* enable ucontrol for s390 */
 struct kvm_s390_ucas_mapping {
 	__u64 user_addr;
