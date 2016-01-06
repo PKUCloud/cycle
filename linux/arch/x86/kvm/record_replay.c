@@ -429,7 +429,7 @@ void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 		gfn, write);
 	rcx = kvm_register_read(vcpu, VCPU_REGS_RCX);
 	rip = vmcs_readl(GUEST_RIP);
-	RR_LOG("%d %lx %lx %x %llx %d\n", vcpu->vcpu_id, rip, rcx, 0, gfn,
+	RR_LOG("1 %d %lx %lx %x %llx %d\n", vcpu->vcpu_id, rip, rcx, 0, gfn,
 	       write);
 
 	req->gfn = gfn;

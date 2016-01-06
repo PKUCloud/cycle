@@ -43,6 +43,7 @@
 #include <asm/xcr.h>
 #include <asm/perf_event.h>
 #include <asm/kexec.h>
+#include <asm/logger.h>
 
 #include "trace.h"
 
@@ -4812,8 +4813,14 @@ static int handle_io(struct kvm_vcpu *vcpu)
 
 	++vcpu->stat.io_exits;
 
-	if (string || in)
+	if (string || in) {
+		if (vcpu->rr_info.enabled)
+			RR_LOG("3 %d %llx %d %llx\n", 0,
+			       vcpu->arch.regs[VCPU_REGS_RIP], 0,
+			       vcpu->arch.regs[VCPU_REGS_RCX]);
+
 		return emulate_instruction(vcpu, 0) == EMULATE_DONE;
+	}
 
 	port = exit_qualification >> 16;
 	size = (exit_qualification & 7) + 1;

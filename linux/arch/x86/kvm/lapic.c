@@ -33,6 +33,7 @@
 #include <asm/page.h>
 #include <asm/current.h>
 #include <asm/apicdef.h>
+#include <asm/logger.h>
 #include <linux/atomic.h>
 #include <linux/jump_label.h>
 #include "kvm_cache_regs.h"
@@ -672,6 +673,12 @@ static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
 {
 	int result = 0;
 	struct kvm_vcpu *vcpu = apic->vcpu;
+	unsigned long rip = vcpu->arch.regs[VCPU_REGS_RIP];
+	unsigned long rcx = vcpu->arch.regs[VCPU_REGS_RCX];
+
+	if (vcpu->rr_info.enabled)
+		RR_LOG("2 %d %d %d %d %llx %d %llx\n", delivery_mode, vector,
+		       level, trig_mode, rip, 0, rcx);
 
 	switch (delivery_mode) {
 	case APIC_DM_LOWEST:
