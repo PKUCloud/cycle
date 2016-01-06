@@ -176,8 +176,8 @@ static void __rr_print_sta(struct kvm *kvm)
 	u64 nr_exits = 0;
 	u64 temp;
 
-	RR_LOG("=== Statistics ===\n");
-	printk(KERN_INFO "=== Statistics ===\n");
+	RR_LOG("=== Statistics for CREW ===\n");
+	printk(KERN_INFO "=== Statistics for CREW ===\n");
 	for (i = 0; i < online_vcpus; ++i) {
 		vcpu_it = kvm->vcpus[i];
 		temp = vcpu_it->rr_info.nr_exits;
@@ -429,7 +429,7 @@ void rr_request_perm(struct kvm_vcpu *vcpu, gfn_t gfn, int write)
 		gfn, write);
 	rcx = kvm_register_read(vcpu, VCPU_REGS_RCX);
 	rip = vmcs_readl(GUEST_RIP);
-	RR_LOG("%d %lx %lx %x 0x%llx %d\n", vcpu->vcpu_id, rip, rcx, 0, gfn,
+	RR_LOG("%d %lx %lx %x %llx %d\n", vcpu->vcpu_id, rip, rcx, 0, gfn,
 	       write);
 
 	req->gfn = gfn;
