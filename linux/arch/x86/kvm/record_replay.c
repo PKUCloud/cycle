@@ -98,6 +98,8 @@ static void __rr_kvm_enable(struct kvm *kvm)
 	struct rr_kvm_info *krr_info = &kvm->rr_info;
 
 	rr_init_hash(&krr_info->gfn_hash);
+	krr_info->disabled_jiffies = 0;
+	krr_info->enabled_jiffies = jiffies;
 	krr_info->enabled = true;
 
 	RR_DLOG(INIT, "rr_kvm_info initialized");
@@ -175,6 +177,7 @@ static void __rr_print_sta(struct kvm *kvm)
 	struct kvm_vcpu *vcpu_it;
 	u64 nr_exits = 0;
 	u64 temp;
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
 
 	RR_LOG("=== Statistics for CREW ===\n");
 	printk(KERN_INFO "=== Statistics for CREW ===\n");
@@ -189,6 +192,16 @@ static void __rr_print_sta(struct kvm *kvm)
 	}
 	RR_LOG("total nr_exits=%lld\n", nr_exits);
 	printk(KERN_INFO "total nr_exits=%lld\n", nr_exits);
+
+	RR_LOG(">>> Stat for time:\n");
+	if (krr_info->enabled_jiffies >= krr_info->disabled_jiffies) {
+		temp = (~0ULL) - krr_info->enabled_jiffies +
+		       krr_info->disabled_jiffies;
+		RR_ERR("warning: jiffies wrapped");
+	} else
+		temp = krr_info->disabled_jiffies - krr_info->enabled_jiffies;
+	RR_LOG("record_up_jiffies=%llu (HZ=%u enabled=%llu disabled=%llu)\n",
+	       temp, HZ, krr_info->enabled_jiffies, krr_info->disabled_jiffies);
 }
 
 static int __rr_crew_disable(struct kvm_vcpu *vcpu)
@@ -197,6 +210,7 @@ static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	if (vrr_info->is_master) {
+		krr_info->disabled_jiffies = jiffies;
 		krr_info->enabled = false;
 		__rr_print_sta(vcpu->kvm);
 	}

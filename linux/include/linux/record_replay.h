@@ -59,6 +59,8 @@ struct rr_kvm_info {
 	spinlock_t crew_lock;
 	struct list_head req_list;
 	atomic_t in_dma;		/* Whether we are in a dma process */
+	u64 enabled_jiffies;
+	u64 disabled_jiffies;
 };
 
 struct rr_gfn_state {
