@@ -8214,6 +8214,25 @@ static struct kvm_x86_ops vmx_x86_ops = {
 	.handle_external_intr = vmx_handle_external_intr,
 };
 
+static void vmx_rr_trace_vm_exit(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+	u32 exit_reason = vmx->exit_reason;
+
+	++(vrr_info->nr_exits);
+	vrr_info->exit_reason = exit_reason;
+	if (likely(exit_reason < RR_EXIT_REASON_MAX))
+		++(vrr_info->exit_stat[exit_reason].counter);
+	else
+		RR_ERR("error: vcpu=%d exit_reason=%u beyonds the range",
+		       vcpu->vcpu_id, exit_reason);
+}
+
+static struct rr_ops vmx_rr_ops = {
+	.trace_vm_exit = vmx_rr_trace_vm_exit,
+};
+
 static int __init vmx_init(void)
 {
 	int r, i, msr;
@@ -8287,6 +8306,8 @@ static int __init vmx_init(void)
 		     __alignof__(struct vcpu_vmx), THIS_MODULE);
 	if (r)
 		goto out7;
+
+	rr_init(&vmx_rr_ops);
 
 #ifdef CONFIG_KEXEC
 	rcu_assign_pointer(crash_vmclear_loaded_vmcss,

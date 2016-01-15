@@ -5738,6 +5738,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	bool req_immediate_exit = false;
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 	struct rr_perm_req *my_req = &(vcpu->rr_info.perm_req);
+	u64 temp;
 
 restart:
 	if (vcpu->requests) {
@@ -5868,6 +5869,14 @@ restart:
 		rr_clear_request(RR_REQ_TLB_FLUSH, vrr_info);
 	}
 
+	if (vrr_info->enabled) {
+		if (likely(vrr_info->cur_exit_jiffies != 0)) {
+			temp = (jiffies - vrr_info->cur_exit_jiffies);
+			vrr_info->exit_jiffies += temp;
+			vrr_info->exit_stat[vrr_info->exit_reason].jiffies += temp;
+		}
+	}
+
 	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
 
 	if (req_immediate_exit)
@@ -5917,6 +5926,9 @@ restart:
 
 	kvm_guest_exit();
 
+	if (vrr_info->enabled)
+		vrr_info->cur_exit_jiffies = jiffies;
+
 	preempt_enable();
 
 	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
@@ -5950,7 +5962,7 @@ restart:
 		kvm_lapic_sync_from_vapic(vcpu);
 
 	if (vrr_info->enabled) {
-		++(vrr_info->nr_exits);
+		rr_trace_vm_exit(vcpu);
 		rr_handle_perm_req(vcpu);
 		if (unlikely(!rr_ctrl.enabled))
 			rr_vcpu_disable(vcpu);

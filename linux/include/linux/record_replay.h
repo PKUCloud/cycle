@@ -28,6 +28,10 @@ struct kvm_vcpu;
 #define RR_PT_CREW_PERM_SHIFT		53
 #define RR_PT_CREW_PERM_MASK		0x7ULL
 
+struct rr_ops {
+	void (*trace_vm_exit)(struct kvm_vcpu *vcpu);
+};
+
 struct rr_perm_req {
 	struct list_head link;
 	bool is_valid;
@@ -41,6 +45,14 @@ struct rr_perm_req {
 	u64 nr_not_accessed;
 };
 
+#define RR_EXIT_REASON_MAX	59
+#define RR_NR_EXIT_REASON_MAX	RR_EXIT_REASON_MAX
+
+struct rr_exit_stat {
+	u64 counter;
+	u64 jiffies;
+};
+
 /* Record and replay control info for a particular vcpu */
 struct rr_vcpu_info {
 	bool enabled;		/* State of record and replay */
@@ -48,6 +60,10 @@ struct rr_vcpu_info {
 	bool is_master;
 	struct rr_perm_req perm_req;
 	u64 nr_exits;		/* Num of VM-Exit */
+	u32 exit_reason;	/* Exit reason of current exit */
+	struct rr_exit_stat exit_stat[RR_NR_EXIT_REASON_MAX];
+	u64 exit_jiffies;
+	u64 cur_exit_jiffies;
 };
 
 /* Record and replay control info for kvm */
@@ -84,6 +100,8 @@ void rr_set_mmio_spte_mask(u64 mmio_mask);
 void rr_fix_tagged_spte(u64 *sptep);
 struct rr_perm_req *rr_page_fault_check(struct kvm_vcpu *vcpu, gfn_t gfn,
 					int write);
+void rr_init(struct rr_ops *vmx_rr_ops);
+void rr_trace_vm_exit(struct kvm_vcpu *vcpu);
 
 static inline void rr_make_request(int req, struct rr_vcpu_info *rr_info)
 {
