@@ -82,6 +82,9 @@ static void __rr_vcpu_enable(struct kvm_vcpu *vcpu)
 {
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
+	vrr_info->nr_exits = 0;
+	vrr_info->exit_jiffies = 0;
+	vrr_info->cur_exit_jiffies = 0;
 	vrr_info->enabled = true;
 
 	RR_DLOG(INIT, "vcpu=%d rr_vcpu_info initialized", vcpu->vcpu_id);
@@ -91,6 +94,8 @@ static void __rr_kvm_enable(struct kvm *kvm)
 {
 	struct rr_kvm_info *krr_info = &kvm->rr_info;
 
+	krr_info->disabled_jiffies = 0;
+	krr_info->enabled_jiffies = jiffies;
 	krr_info->enabled = true;
 
 	RR_DLOG(INIT, "rr_kvm_info initialized");
@@ -148,13 +153,59 @@ int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_enable);
 
+static void __rr_print_sta(struct kvm *kvm)
+{
+	int online_vcpus = atomic_read(&kvm->online_vcpus);
+	int i;
+	struct kvm_vcpu *vcpu_it;
+	u64 nr_exits = 0;
+	u64 exit_jiffies = 0;
+	u64 temp;
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
+
+	RR_LOG("=== Statistics for Baseline ===\n");
+	printk(KERN_INFO "=== Statistics for Baseline ===\n");
+	for (i = 0; i < online_vcpus; ++i) {
+		vcpu_it = kvm->vcpus[i];
+		temp = vcpu_it->rr_info.nr_exits;
+		nr_exits += temp;
+		RR_LOG("vcpu=%d nr_exits=%lld\n", vcpu_it->vcpu_id,
+		       temp);
+		printk(KERN_INFO "vcpu=%d nr_exits=%lld\n", vcpu_it->vcpu_id,
+		       temp);
+	}
+	RR_LOG("total nr_exits=%lld\n", nr_exits);
+	printk(KERN_INFO "total nr_exits=%lld\n", nr_exits);
+
+	RR_LOG(">>> Stat for time:\n");
+	for (i = 0; i < online_vcpus; ++i) {
+		vcpu_it = kvm->vcpus[i];
+		temp = vcpu_it->rr_info.exit_jiffies;
+		exit_jiffies += temp;
+		RR_LOG("vcpu=%d exit_jiffies=%llu\n", vcpu_it->vcpu_id, temp);
+	}
+	RR_LOG("total exit_jiffies=%llu\n", exit_jiffies);
+
+	if (krr_info->enabled_jiffies >= krr_info->disabled_jiffies) {
+		temp = (~0ULL) - krr_info->enabled_jiffies +
+		       krr_info->disabled_jiffies;
+		RR_ERR("warning: jiffies wrapped");
+	} else
+		temp = krr_info->disabled_jiffies - krr_info->enabled_jiffies;
+
+	RR_LOG("record_up_jiffies=%llu (HZ=%u enabled=%llu disabled=%llu)\n",
+	       temp, HZ, krr_info->enabled_jiffies, krr_info->disabled_jiffies);
+}
+
 static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 {
 	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	if (vrr_info->is_master) {
+		krr_info->disabled_jiffies = jiffies;
 		krr_info->enabled = false;
+		__rr_print_sta(vcpu->kvm);
 	}
 
 	vrr_info->enabled = false;

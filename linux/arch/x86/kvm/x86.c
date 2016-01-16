@@ -5735,6 +5735,8 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	bool req_int_win = !irqchip_in_kernel(vcpu->kvm) &&
 		vcpu->run->request_interrupt_window;
 	bool req_immediate_exit = false;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
+	u64 temp;
 
 	if (vcpu->requests) {
 		if (kvm_check_request(KVM_REQ_MMU_RELOAD, vcpu))
@@ -5787,7 +5789,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	}
 
 	/* Enable record and replay */
-	if (unlikely(rr_ctrl.enabled && !vcpu->rr_info.enabled)) {
+	if (unlikely(rr_ctrl.enabled && !vrr_info->enabled)) {
 		rr_vcpu_enable(vcpu);
 	}
 
@@ -5852,6 +5854,13 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		goto cancel_injection;
 	}
 
+	if (vrr_info->enabled) {
+		if (likely(vrr_info->cur_exit_jiffies != 0)) {
+			temp = jiffies - vrr_info->cur_exit_jiffies;
+			vrr_info->exit_jiffies += temp;
+		}
+	}
+
 	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
 
 	if (req_immediate_exit)
@@ -5901,6 +5910,9 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	kvm_guest_exit();
 
+	if (vrr_info->enabled)
+		vrr_info->cur_exit_jiffies = jiffies;
+
 	preempt_enable();
 
 	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
@@ -5919,8 +5931,11 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	if (vcpu->arch.apic_attention)
 		kvm_lapic_sync_from_vapic(vcpu);
 
-	if (unlikely(!rr_ctrl.enabled && vcpu->rr_info.enabled)) {
-		rr_vcpu_disable(vcpu);
+	if (vrr_info->enabled) {
+		if (likely(rr_ctrl.enabled)) {
+			++(vrr_info->nr_exits);
+		} else
+			rr_vcpu_disable(vcpu);
 	}
 
 	r = kvm_x86_ops->handle_exit(vcpu);
