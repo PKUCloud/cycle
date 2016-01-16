@@ -8,6 +8,14 @@
 struct kvm;
 struct kvm_vcpu;
 
+#define RR_EXIT_REASON_MAX	59
+#define RR_NR_EXIT_REASON_MAX	RR_EXIT_REASON_MAX
+
+struct rr_exit_stat {
+	u64 counter;
+	u64 jiffies;
+};
+
 /* Record and replay control info for a particular vcpu */
 struct rr_vcpu_info {
 	bool enabled;		/* State of record and replay */
@@ -15,6 +23,8 @@ struct rr_vcpu_info {
 	u64 nr_exits;
 	u64 exit_jiffies;
 	u64 cur_exit_jiffies;
+	u32 exit_reason;
+	struct rr_exit_stat exit_stat[RR_NR_EXIT_REASON_MAX];
 };
 
 /* Record and replay control info for kvm */

@@ -5858,6 +5858,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		if (likely(vrr_info->cur_exit_jiffies != 0)) {
 			temp = jiffies - vrr_info->cur_exit_jiffies;
 			vrr_info->exit_jiffies += temp;
+			vrr_info->exit_stat[vrr_info->exit_reason].jiffies += temp;
 		}
 	}
 

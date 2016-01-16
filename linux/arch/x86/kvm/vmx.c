@@ -43,6 +43,7 @@
 #include <asm/xcr.h>
 #include <asm/perf_event.h>
 #include <asm/kexec.h>
+#include <asm/logger.h>
 
 #include "trace.h"
 
@@ -6579,7 +6580,17 @@ static int vmx_handle_exit(struct kvm_vcpu *vcpu)
 	struct vcpu_vmx *vmx = to_vmx(vcpu);
 	u32 exit_reason = vmx->exit_reason;
 	u32 vectoring_info = vmx->idt_vectoring_info;
+	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
+	if (vrr_info->enabled) {
+		vrr_info->exit_reason = exit_reason;
+		if (likely(exit_reason < RR_EXIT_REASON_MAX)) {
+			++(vrr_info->exit_stat[exit_reason].counter);
+		} else {
+			RR_ERR("error: vcpu=%d exit_reason=%u beyonds the "
+			       "range", vcpu->vcpu_id, exit_reason);
+		}
+	}
 	/* If guest state is invalid, start emulating */
 	if (vmx->emulation_required)
 		return handle_invalid_guest_state(vcpu);
