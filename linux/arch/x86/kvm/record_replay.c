@@ -82,7 +82,6 @@ static void __rr_vcpu_enable(struct kvm_vcpu *vcpu)
 {
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
-	vrr_info->requests = 0;
 	vrr_info->enabled = true;
 
 	RR_DLOG(INIT, "vcpu=%d rr_vcpu_info initialized", vcpu->vcpu_id);
@@ -103,15 +102,6 @@ static int __rr_crew_init(struct kvm_vcpu *vcpu)
 	/* MUST make rr_info.enabled true before separating page tables */
 	__rr_vcpu_enable(vcpu);
 
-	/* Obsolete existing paging structures to separate page tables of
-	 * different vcpus.
-	 */
-	if (vcpu->rr_info.is_master) {
-		vcpu->kvm->arch.mmu_valid_gen++;
-	}
-	kvm_mmu_unload(vcpu);
-	kvm_mmu_reload(vcpu);
-
 	RR_DLOG(INIT, "vcpu=%d enabled, root_hpa=0x%llx",
 		vcpu->vcpu_id, vcpu->arch.mmu.root_hpa);
 	return 0;
@@ -128,7 +118,6 @@ void rr_vcpu_info_init(struct rr_vcpu_info *rr_info)
 {
 	memset(rr_info, 0, sizeof(*rr_info));
 	rr_info->enabled = false;
-	rr_info->requests = 0;
 	rr_info->is_master = false;
 
 	RR_DLOG(INIT, "rr_vcpu_info initialized partially");
@@ -169,27 +158,14 @@ static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 	}
 
 	vrr_info->enabled = false;
-	rr_clear_all_request(vrr_info);
 
 	RR_DLOG(INIT, "vcpu=%d disabled", vcpu->vcpu_id);
 	return 0;
 }
 
-static int __rr_crew_post_disable(struct kvm_vcpu *vcpu)
-{
-	vcpu->kvm->arch.mmu_valid_gen++;
-	return 0;
-}
-
 void rr_vcpu_disable(struct kvm_vcpu *vcpu)
 {
-	__rr_vcpu_sync(vcpu, __rr_crew_disable, __rr_crew_disable,
-		       __rr_crew_post_disable);
-
-	kvm_mmu_unload(vcpu);
-	kvm_mmu_reload(vcpu);
-	kvm_make_request(KVM_REQ_TLB_FLUSH, vcpu);
-
+	__rr_vcpu_sync(vcpu, __rr_crew_disable, __rr_crew_disable, NULL);
 	RR_DLOG(INIT, "vcpu=%d finish", vcpu->vcpu_id);
 	printk(KERN_INFO "vcpu=%d disabled\n", vcpu->vcpu_id);
 }

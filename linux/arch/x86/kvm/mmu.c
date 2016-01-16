@@ -1970,13 +1970,6 @@ static struct kvm_mmu_page *kvm_mmu_get_page(struct kvm_vcpu *vcpu,
 		if (sp->unsync && kvm_sync_page_transient(vcpu, sp))
 			break;
 
-		/* Record and replay
-		 * To avoid using the same paging structure page of another
-		 * vcpu.
-		 */
-		if (vcpu->rr_info.enabled && sp->vcpu != vcpu)
-			continue;
-
 		mmu_page_add_parent_pte(vcpu, sp, parent_pte);
 		if (sp->unsync_children) {
 			kvm_make_request(KVM_REQ_MMU_SYNC, vcpu);
@@ -1994,7 +1987,6 @@ static struct kvm_mmu_page *kvm_mmu_get_page(struct kvm_vcpu *vcpu,
 		return sp;
 	sp->gfn = gfn;
 	sp->role = role;
-	sp->vcpu = vcpu;
 	hlist_add_head(&sp->hash_link,
 		&vcpu->kvm->arch.mmu_page_hash[kvm_page_table_hashfn(gfn)]);
 	if (!direct) {
