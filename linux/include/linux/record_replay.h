@@ -50,7 +50,7 @@ struct rr_perm_req {
 
 struct rr_exit_stat {
 	u64 counter;
-	u64 jiffies;
+	u64 time;
 };
 
 /* Record and replay control info for a particular vcpu */
@@ -62,8 +62,8 @@ struct rr_vcpu_info {
 	u64 nr_exits;		/* Num of VM-Exit */
 	u32 exit_reason;	/* Exit reason of current exit */
 	struct rr_exit_stat exit_stat[RR_NR_EXIT_REASON_MAX];
-	u64 exit_jiffies;
-	u64 cur_exit_jiffies;
+	u64 exit_time;
+	u64 cur_exit_time;
 };
 
 /* Record and replay control info for kvm */
@@ -75,8 +75,8 @@ struct rr_kvm_info {
 	spinlock_t crew_lock;
 	struct list_head req_list;
 	atomic_t in_dma;		/* Whether we are in a dma process */
-	u64 enabled_jiffies;
-	u64 disabled_jiffies;
+	u64 enabled_time;
+	u64 disabled_time;
 };
 
 struct rr_gfn_state {
