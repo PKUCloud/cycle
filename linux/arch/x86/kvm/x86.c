@@ -5855,10 +5855,11 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	}
 
 	if (vrr_info->enabled) {
-		if (likely(vrr_info->cur_exit_jiffies != 0)) {
-			temp = jiffies - vrr_info->cur_exit_jiffies;
-			vrr_info->exit_jiffies += temp;
-			vrr_info->exit_stat[vrr_info->exit_reason].jiffies += temp;
+		if (likely(vrr_info->cur_exit_time != 0)) {
+			rdtscll(temp);
+			temp -= vrr_info->cur_exit_time;
+			vrr_info->exit_time += temp;
+			vrr_info->exit_stat[vrr_info->exit_reason].time += temp;
 		}
 	}
 
@@ -5912,7 +5913,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 	kvm_guest_exit();
 
 	if (vrr_info->enabled)
-		vrr_info->cur_exit_jiffies = jiffies;
+		rdtscll(vrr_info->cur_exit_time);
 
 	preempt_enable();
 

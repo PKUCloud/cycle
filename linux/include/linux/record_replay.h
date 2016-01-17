@@ -13,7 +13,7 @@ struct kvm_vcpu;
 
 struct rr_exit_stat {
 	u64 counter;
-	u64 jiffies;
+	u64 time;
 };
 
 /* Record and replay control info for a particular vcpu */
@@ -21,8 +21,8 @@ struct rr_vcpu_info {
 	bool enabled;		/* State of record and replay */
 	bool is_master;
 	u64 nr_exits;
-	u64 exit_jiffies;
-	u64 cur_exit_jiffies;
+	u64 exit_time;
+	u64 cur_exit_time;
 	u32 exit_reason;
 	struct rr_exit_stat exit_stat[RR_NR_EXIT_REASON_MAX];
 };
@@ -32,8 +32,8 @@ struct rr_kvm_info {
 	bool enabled;
 	atomic_t nr_sync_vcpus;
 	atomic_t nr_fin_vcpus;
-	u64 enabled_jiffies;
-	u64 disabled_jiffies;
+	u64 enabled_time;
+	u64 disabled_time;
 };
 
 void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
