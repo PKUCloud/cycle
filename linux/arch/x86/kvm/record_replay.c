@@ -91,6 +91,8 @@ static void __rr_kvm_enable(struct kvm *kvm)
 {
 	struct rr_kvm_info *krr_info = &kvm->rr_info;
 
+	krr_info->disabled_time = 0;
+	rdtscll(krr_info->enabled_time);
 	krr_info->enabled = true;
 
 	RR_DLOG(INIT, "rr_kvm_info initialized");
@@ -148,13 +150,34 @@ int rr_vcpu_enable(struct kvm_vcpu *vcpu)
 }
 EXPORT_SYMBOL_GPL(rr_vcpu_enable);
 
+static void __rr_print_sta(struct kvm *kvm)
+{
+	struct rr_kvm_info *krr_info = &kvm->rr_info;
+	u64 temp;
+
+	RR_LOG("=== Statistics for FT test ===\n");
+	printk(KERN_INFO "=== Statistics for FT test ===\n");
+
+	if (krr_info->enabled_time >= krr_info->disabled_time) {
+		temp = (~0ULL) - krr_info->enabled_time +
+		       krr_info->disabled_time;
+		RR_ERR("warning: time wrapped");
+	} else
+		temp = krr_info->disabled_time - krr_info->enabled_time;
+
+	RR_LOG("record_up_time=%llu (enabled=%llu disabled=%llu)\n", temp,
+	       krr_info->enabled_time, krr_info->disabled_time);
+}
+
 static int __rr_crew_disable(struct kvm_vcpu *vcpu)
 {
 	struct rr_kvm_info *krr_info = &vcpu->kvm->rr_info;
 	struct rr_vcpu_info *vrr_info = &vcpu->rr_info;
 
 	if (vrr_info->is_master) {
+		rdtscll(krr_info->disabled_time);
 		krr_info->enabled = false;
+		__rr_print_sta(vcpu->kvm);
 	}
 
 	vrr_info->enabled = false;

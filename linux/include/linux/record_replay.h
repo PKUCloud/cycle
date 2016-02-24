@@ -19,6 +19,8 @@ struct rr_kvm_info {
 	bool enabled;
 	atomic_t nr_sync_vcpus;
 	atomic_t nr_fin_vcpus;
+	u64 enabled_time;
+	u64 disabled_time;
 };
 
 void rr_vcpu_info_init(struct rr_vcpu_info *rr_info);
