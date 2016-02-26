@@ -40,6 +40,7 @@
 #include <asm/cmpxchg.h>
 #include <asm/io.h>
 #include <asm/vmx.h>
+#include <asm/logger.h>
 
 /*
  * When setting this variable to true it enables Two-Dimensional-Paging
@@ -194,6 +195,7 @@ static void mmu_free_roots(struct kvm_vcpu *vcpu);
 void kvm_mmu_set_mmio_spte_mask(u64 mmio_mask)
 {
 	shadow_mmio_mask = mmio_mask;
+	rr_set_mmio_spte_mask(mmio_mask);
 }
 EXPORT_SYMBOL_GPL(kvm_mmu_set_mmio_spte_mask);
 
